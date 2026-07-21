@@ -1,0 +1,71 @@
+{
+  "name": "@benchgen/benchgen-openclaw",
+  "version": "0.1.1",
+  "description": "Stream OpenClaw agent traces to Benchgen for observability and training-data capture",
+  "type": "module",
+  "main": "index.js",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.js",
+    "cli.js",
+    "configure.js",
+    "tracer.js",
+    "mapping.js",
+    "transcript.js",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ],
+    "runtimeExtensions": [
+      "./index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.6.1"
+    },
+    "build": {
+      "openclawVersion": "2026.6.1"
+    },
+    "install": {
+      "npmSpec": "@benchgen/benchgen-openclaw",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.6.1"
+    },
+    "release": {
+      "publishToNpm": true
+    }
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "benchgen",
+    "observability",
+    "llm",
+    "tracing",
+    "diagnostics"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benchgen-ai/benchgen-openclaw.git"
+  },
+  "bugs": {
+    "url": "https://github.com/benchgen-ai/benchgen-openclaw/issues"
+  },
+  "homepage": "https://github.com/benchgen-ai/benchgen-openclaw#readme",
+  "license": "MIT",
+  "dependencies": {
+    "@clack/prompts": "^0.7.0",
+    "@langfuse/otel": "^5.9.0",
+    "@langfuse/tracing": "^5.9.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/sdk-trace-node": "^2.8.0"
+  }
+}

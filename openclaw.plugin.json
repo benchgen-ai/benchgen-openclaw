@@ -1,0 +1,52 @@
+{
+  "id": "benchgen",
+  "name": "Benchgen",
+  "description": "Stream OpenClaw agent traces to Benchgen for observability and training-data capture",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "description": "Enable Benchgen streaming while the plugin is loaded."
+      },
+      "publicKey": {
+        "type": "string",
+        "description": "Benchgen project public key. Falls back to BENCHGEN_PUBLIC_KEY."
+      },
+      "secretKey": {
+        "type": "string",
+        "description": "Benchgen project secret key. Falls back to BENCHGEN_SECRET_KEY."
+      },
+      "baseUrl": {
+        "type": "string",
+        "description": "Benchgen ingest endpoint. Falls back to BENCHGEN_BASE_URL."
+      }
+    }
+  },
+  "uiHints": {
+    "enabled": {
+      "label": "Streaming Enabled",
+      "help": "Stream agent traces to Benchgen while the plugin is loaded."
+    },
+    "publicKey": {
+      "label": "Benchgen Public Key",
+      "placeholder": "pk-...",
+      "help": "Copy from your project settings in the Benchgen dashboard. Falls back to BENCHGEN_PUBLIC_KEY."
+    },
+    "secretKey": {
+      "label": "Benchgen Secret Key",
+      "placeholder": "sk-...",
+      "sensitive": true,
+      "help": "Copy from your project settings in the Benchgen dashboard. Falls back to BENCHGEN_SECRET_KEY."
+    },
+    "baseUrl": {
+      "label": "Benchgen Endpoint",
+      "placeholder": "https://benchgen.com",
+      "help": "Your Benchgen endpoint URL. Falls back to BENCHGEN_BASE_URL."
+    }
+  }
+}
