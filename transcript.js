@@ -64,6 +64,18 @@ function readWindow(file, maxBytes, from) {
 
 /** Extract a prompt/response from a single parsed transcript event. */
 function entryIO(obj) {
+  // Transcript schema v3 (OpenClaw >=2026.7.2): message content lives on
+  // `message` events (`{ type: "message", message: { role, content[] } }`)
+  // instead of `model.completed` entries with finalPromptText/assistantTexts.
+  if (obj?.type === "message" && obj.message) {
+    const m = obj.message;
+    const text = contentToText(m.content);
+    if (text === undefined) return {};
+    if (m.role === "user") return { input: text };
+    if (m.role === "assistant") return { output: text };
+    return {};
+  }
+
   const data = obj?.data;
   if (!data) return {};
   if (obj.type === "model.completed") {
