@@ -86,13 +86,13 @@ async function isBenchgenAccessible(baseUrl, publicKey, secretKey, timeoutMs = 5
 
 /**
  * Run the interactive Benchgen setup wizard.
- * @param {{ loadConfig: () => any, writeConfigFile: (cfg: any) => Promise<void> }} deps
+ * @param {{ getConfig: () => any, mutateConfigFile: (opts: { mutate: (draft: any) => void, afterWrite: any }) => Promise<any> }} deps
  */
 export async function runBenchgenConfigure(deps) {
   p.intro("Benchgen setup");
   p.log.info(`Grab your project keys from the Benchgen dashboard:\n${BENCHGEN_DASHBOARD_URL}`);
 
-  const existing = getBenchgenPluginEntry(deps.loadConfig()).config;
+  const existing = getBenchgenPluginEntry(deps.getConfig()).config;
 
   const publicKeyInput = await p.text({
     message: "Enter your Benchgen public key:",
@@ -157,13 +157,17 @@ export async function runBenchgenConfigure(deps) {
     }
   }
 
-  const cfg = deps.loadConfig();
-  const nextCfg = setBenchgenPluginEntry(
-    cfg,
-    { enabled: true, publicKey, secretKey, baseUrl },
-    true,
-  );
-  await deps.writeConfigFile(nextCfg);
+  await deps.mutateConfigFile({
+    afterWrite: { mode: "restart", reason: "Benchgen plugin configured" },
+    mutate(draft) {
+      const next = setBenchgenPluginEntry(
+        draft,
+        { enabled: true, publicKey, secretKey, baseUrl },
+        true,
+      );
+      Object.assign(draft, next);
+    },
+  });
 
   p.note(
     [
@@ -180,10 +184,10 @@ export async function runBenchgenConfigure(deps) {
 
 /**
  * Print the current Benchgen configuration (config file + env fallbacks).
- * @param {{ loadConfig: () => any }} deps
+ * @param {{ getConfig: () => any }} deps
  */
 export function showBenchgenStatus(deps) {
-  const entry = getBenchgenPluginEntry(deps.loadConfig());
+  const entry = getBenchgenPluginEntry(deps.getConfig());
   const cfg = entry.config;
 
   const publicKey = cfg.publicKey ?? process.env.BENCHGEN_PUBLIC_KEY;

@@ -18,11 +18,11 @@ async function showStatusLazy(deps) {
 }
 
 /**
- * @param {{ program: any, loadConfig: () => any, writeConfigFile: (cfg: any) => Promise<void> }} params
+ * @param {{ program: any, getConfig: () => any, mutateConfigFile: (opts: { mutate: (draft: any) => void, afterWrite: any }) => Promise<any> }} params
  */
 export function registerBenchgenCli(params) {
-  const { program, loadConfig, writeConfigFile } = params;
-  const deps = { loadConfig, writeConfigFile };
+  const { program, getConfig, mutateConfigFile } = params;
+  const deps = { getConfig, mutateConfigFile };
 
   const root = program.command("benchgen").description("Benchgen streaming integration");
 

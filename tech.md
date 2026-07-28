@@ -1,0 +1,2 @@
+cd /Users/admin/Desktop/openclaw_plugins/benchgen-openclaw
+TMPRC=$(mktemp) && printf '//registry.npmjs.org/:_authToken=%s\n' "$TOKEN" > "$TMPRC" && npm publish --access public --userconfig "$TMPRC"; rm -f "$TMPRC"

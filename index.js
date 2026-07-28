@@ -38,6 +38,34 @@ const DEFAULT_BASE_URL = "https://benchgen.com";
 const REAPER_INTERVAL_MS = 60_000;
 
 /**
+ * Bridge the CLI's config deps to whatever config runtime the host exposes.
+ *
+ * OpenClaw >=2026.7.x removed the ambient `api.runtime.config.loadConfig()` /
+ * `writeConfigFile()` pair in favor of `current()` (read snapshot) and
+ * `mutateConfigFile({ mutate, afterWrite })` (transactional write). We prefer
+ * the new surface and fall back to the legacy one only if the host doesn't
+ * expose `current`/`mutateConfigFile` (older OpenClaw versions).
+ */
+function resolveConfigDeps(api) {
+  const configRuntime = api.runtime?.config ?? {};
+  if (typeof configRuntime.current === "function" && typeof configRuntime.mutateConfigFile === "function") {
+    return {
+      getConfig: () => configRuntime.current(),
+      mutateConfigFile: (opts) => configRuntime.mutateConfigFile(opts),
+    };
+  }
+  // Legacy fallback (pre-2026.7 hosts).
+  return {
+    getConfig: () => configRuntime.loadConfig(),
+    mutateConfigFile: async ({ mutate }) => {
+      const draft = configRuntime.loadConfig();
+      mutate(draft);
+      await configRuntime.writeConfigFile(draft);
+    },
+  };
+}
+
+/**
  * Resolve effective config from the plugin's scoped config block
  * (openclaw.json -> plugins.entries["benchgen"].config) with
  * environment-variable fallbacks.
@@ -103,7 +131,9 @@ function createBenchgenService(getPluginConfig) {
       // Prompt/response text and tool args/results are not delivered to
       // third-party plugins (they're private data given only to bundled
       // services), so we recover them best-effort from OpenClaw's per-session
-      // trajectory transcript under ctx.stateDir to populate observation IO.
+      // transcript (read via the storage-neutral session-transcript-runtime SDK
+      // surface, with a legacy .trajectory.jsonl file fallback under
+      // ctx.stateDir for older hosts) to populate observation IO.
       const resolveContent = makeContentResolver(ctx.stateDir, ctx.logger);
       const resolveToolIO = makeToolIOResolver(ctx.stateDir, ctx.logger);
 
@@ -140,9 +170,10 @@ function createBenchgenService(getPluginConfig) {
         clearInterval(reaper);
         reaper = null;
       }
-      // End any still-open observations before the provider shuts down.
+      // End any still-open observations before the provider shuts down. Awaited:
+      // finalization now reads the session transcript asynchronously.
       try {
-        engine?.flushAll();
+        await engine?.flushAll();
       } catch {
         // best-effort flush of in-flight observations
       }
@@ -180,13 +211,18 @@ export default definePluginEntry({
     // Opik-style interactive setup: `openclaw benchgen configure` / `status`.
     // No manual openclaw.json editing required. Guarded so the plugin still
     // loads on hosts/older SDKs that don't expose registerCli.
-    if (typeof api.registerCli === "function" && api.runtime?.config) {
+    // NOTE: do NOT guard on api.runtime?.config here — that check silently
+    // prevents CLI registration, causing "No built-in command or plugin CLI
+    // metadata owns 'benchgen'" on any SDK version where api.runtime is
+    // populated lazily or restructured. The callback is only invoked at
+    // command-execution time (not at registration), so runtime.config is
+    // safely accessed inside without blocking route registration.
+    if (typeof api.registerCli === "function") {
       api.registerCli(
         ({ program }) =>
           registerBenchgenCli({
             program,
-            loadConfig: api.runtime.config.loadConfig,
-            writeConfigFile: api.runtime.config.writeConfigFile,
+            ...resolveConfigDeps(api),
           }),
         { commands: ["benchgen"] },
       );
