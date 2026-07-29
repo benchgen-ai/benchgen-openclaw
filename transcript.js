@@ -117,55 +117,72 @@ function contentToText(content) {
 }
 
 /**
+ * Pure: fold one conversation message's tool-call / tool-result content into
+ * a `{ [toolCallId]: { name, input, output, isError } }` accumulator. Tool
+ * inputs live on assistant `toolCall` content blocks ({ id, name, arguments });
+ * tool outputs live on dedicated `toolResult` messages ({ toolCallId,
+ * toolName, content, isError }). Shared by both transcript schemas below.
+ */
+function applyMessageToToolIO(msg, byId) {
+  if (!msg || typeof msg !== "object") return;
+  // Tool outputs: dedicated toolResult messages.
+  if (msg.role === "toolResult" && typeof msg.toolCallId === "string") {
+    const entry = (byId[msg.toolCallId] ??= {});
+    const out = contentToText(msg.content);
+    if (out !== undefined) entry.output = out;
+    if (typeof msg.toolName === "string") entry.name ??= msg.toolName;
+    if (typeof msg.isError === "boolean") entry.isError = msg.isError;
+    return;
+  }
+  // Tool inputs: assistant toolCall content blocks.
+  const content = msg.content;
+  if (!Array.isArray(content)) return;
+  for (const block of content) {
+    if (block?.type !== "toolCall" || typeof block.id !== "string") continue;
+    const entry = (byId[block.id] ??= {});
+    if (typeof block.name === "string") entry.name = block.name;
+    if (block.arguments !== undefined) {
+      entry.input =
+        typeof block.arguments === "string"
+          ? block.arguments
+          : JSON.stringify(block.arguments);
+    }
+  }
+}
+
+/**
  * Pure: extract per-tool input/output from an array of parsed transcript
  * events, keyed by the tool call id (which matches the `toolCallId` on
- * `tool.execution.*` diagnostic events). We read the LAST `model.completed`
- * event's `messagesSnapshot`, which is the cumulative conversation and
- * therefore holds every tool call + result of the run by the time the run ends.
+ * `tool.execution.*` diagnostic events). Two transcript shapes are supported:
  *
- * In the snapshot, tool inputs live on assistant `toolCall` blocks
- * ({ id, name, arguments }) and tool outputs live on `toolResult` messages
- * ({ toolCallId, toolName, content, isError }). Returns a plain object
- * { [toolCallId]: { name, input, output, isError } } or null when none found.
+ * - Schema v3 (OpenClaw >=2026.7.2, current): each turn's messages are logged
+ *   directly as individual `{ type: "message", message }` events, so we fold
+ *   every one of those in encounter order.
+ * - Legacy: a single `model.completed` entry carries a cumulative
+ *   `messagesSnapshot` array (every tool call + result of the run so far); we
+ *   keep only the LAST one (cumulative, so last wins).
+ *
+ * Returns a plain object { [toolCallId]: { name, input, output, isError } } or
+ * null when none found.
  */
 export function extractToolIO(events) {
+  const byId = {};
+  let sawAny = false;
   let snapshot;
-  // Walk forward; keep the latest snapshot (cumulative, so last wins).
   for (const obj of events) {
-    if (obj?.type === "model.completed" && Array.isArray(obj?.data?.messagesSnapshot)) {
+    if (obj?.type === "message" && obj.message) {
+      applyMessageToToolIO(obj.message, byId);
+      sawAny = true;
+    } else if (obj?.type === "model.completed" && Array.isArray(obj?.data?.messagesSnapshot)) {
+      // Walk forward; keep the latest snapshot (cumulative, so last wins).
       snapshot = obj.data.messagesSnapshot;
     }
   }
-  if (!snapshot) return null;
-
-  const byId = {};
-  const ensure = (id) => (byId[id] ??= {});
-  for (const msg of snapshot) {
-    if (!msg || typeof msg !== "object") continue;
-    // Tool outputs: dedicated toolResult messages.
-    if (msg.role === "toolResult" && typeof msg.toolCallId === "string") {
-      const entry = ensure(msg.toolCallId);
-      const out = contentToText(msg.content);
-      if (out !== undefined) entry.output = out;
-      if (typeof msg.toolName === "string") entry.name ??= msg.toolName;
-      if (typeof msg.isError === "boolean") entry.isError = msg.isError;
-      continue;
-    }
-    // Tool inputs: assistant toolCall content blocks.
-    const content = msg.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (block?.type !== "toolCall" || typeof block.id !== "string") continue;
-      const entry = ensure(block.id);
-      if (typeof block.name === "string") entry.name = block.name;
-      if (block.arguments !== undefined) {
-        entry.input =
-          typeof block.arguments === "string"
-            ? block.arguments
-            : JSON.stringify(block.arguments);
-      }
-    }
+  if (snapshot) {
+    for (const msg of snapshot) applyMessageToToolIO(msg, byId);
+    sawAny = true;
   }
+  if (!sawAny) return null;
   return Object.keys(byId).length > 0 ? byId : null;
 }
 
@@ -176,22 +193,31 @@ export function extractToolIO(events) {
  * the events (for trace-level aggregation). Returns null when nothing usable
  * is found.
  *
- * When `runId` is given, `input`/`output` are taken ONLY from the entry
- * matching that run — a session's trajectory file accumulates every turn, and
- * without this a still-in-flight write for turn N could silently return turn
- * N-1's (stale) content instead of null (which is what should trigger a
- * retry). `sessionInput` always looks at the whole session regardless of
- * `runId`, since it means "the first-ever prompt", not this turn's prompt.
+ * When `runId` is given AND at least one event actually carries a `runId`
+ * field, `input`/`output` are taken ONLY from entries matching that run — a
+ * session's trajectory file accumulates every turn, and without this a
+ * still-in-flight write for turn N could silently return turn N-1's (stale)
+ * content instead of null (which is what should trigger a retry).
+ * `sessionInput` always looks at the whole session regardless of `runId`,
+ * since it means "the first-ever prompt", not this turn's prompt.
+ *
+ * Schema v3 `{ type: "message", message }` events (OpenClaw >=2026.7.2) carry
+ * no `runId` at all (only legacy `model.completed`/`prompt.submitted` entries
+ * do) — every event would then mismatch any given `runId`, and this would
+ * always return null even though the transcript has perfectly good turn
+ * content. So the runId scope is only enforced when the events themselves
+ * demonstrate they carry that field.
  */
 export function extractContent(events, runId) {
   let input;
   let output;
   let sessionInput;
+  const scopeByRunId = runId !== undefined && events.some((e) => e?.runId !== undefined);
   for (const obj of events) {
     if (!obj) continue;
     const io = entryIO(obj);
     if (io.input !== undefined && sessionInput === undefined) sessionInput = io.input;
-    if (runId !== undefined && obj.runId !== runId) continue;
+    if (scopeByRunId && obj.runId !== runId) continue;
     if (io.input !== undefined) input = io.input;
     if (io.output !== undefined) output = io.output;
   }
