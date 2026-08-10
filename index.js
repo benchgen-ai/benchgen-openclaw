@@ -28,7 +28,7 @@ import {
   setLangfuseTracerProvider,
 } from "@langfuse/tracing";
 import { createTraceEngine } from "./tracer.js";
-import { compact, setTraceFields } from "./mapping.js";
+import { compact, setTraceFields, setTraceTags } from "./mapping.js";
 import { makeContentResolver, makeToolIOResolver } from "./transcript.js";
 import { registerBenchgenCli } from "./cli.js";
 
@@ -36,8 +36,15 @@ const DEFAULT_BASE_URL = "https://benchgen.com";
 
 // Name of the handshake trace sent once the exporter is live. Distinct from
 // anything the engine emits (it names traces after the channel), so it is easy
-// to spot in the list — and to filter out.
+// to spot in the list.
 const STARTUP_TRACE_NAME = "benchgen.plugin.connected";
+
+// Tagged as well as named, because these accumulate: the service starts on every
+// gateway restart AND on every hot reload of the plugin's config, so a week of
+// ordinary work leaves a stack of them among real traffic. The name alone is not
+// enough — BenchGen's trace list filters by tag, and a tag is what lets somebody
+// exclude setup noise (or go looking for exactly it).
+const STARTUP_TRACE_TAGS = ["benchgen-setup"];
 
 // How often the idle reaper ends dangling observations (orphaned by dropped
 // start/complete events). Kept well under the engine's TTL.
@@ -88,6 +95,12 @@ function resolveConfig(pluginConfig) {
     // for the handshake to be noise.
     startupTrace:
       typeof cfg.startupTrace === "boolean" ? cfg.startupTrace : true,
+    // Off by default. What OpenClaw actually puts on a diagnostic event is not
+    // documented and differs by host version, so when a field we map turns up
+    // empty the only reliable way to find out why is to look at one real event.
+    // Config rather than an env var, because plugin config hot-reloads: this can
+    // be switched on and off on a running gateway.
+    debugEvents: cfg.debugEvents === true,
   };
 }
 
@@ -125,6 +138,7 @@ async function emitStartupTrace({ ctx, spanProcessor, baseUrl }) {
       compact({ asType: "agent", startTime: new Date() }),
     );
     setTraceFields(obs, STARTUP_TRACE_NAME, undefined);
+    setTraceTags(obs, STARTUP_TRACE_TAGS);
     obs.end(new Date());
     await spanProcessor.forceFlush();
     ctx.logger.info(
@@ -153,7 +167,7 @@ function createBenchgenService(getPluginConfig) {
     id: "benchgen",
 
     async start(ctx) {
-      const { enabled, publicKey, secretKey, baseUrl, startupTrace } =
+      const { enabled, publicKey, secretKey, baseUrl, startupTrace, debugEvents } =
         resolveConfig(getPluginConfig());
 
       if (!enabled) {
@@ -203,7 +217,32 @@ function createBenchgenService(getPluginConfig) {
       // (event, metadata) => void. We only need the event body; the engine
       // ignores unrelated event types and catches its own errors, so it never
       // throws into the bus.
-      unsubscribe = onInternalDiagnosticEvent((evt) => engine?.handle(evt));
+      // One line per event type, first occurrence only: the point is the shape,
+      // and an unfiltered dump of a busy gateway buries it. Values are printed
+      // for the identity fields we map and nothing else, so this never puts
+      // prompt or tool content in the logs.
+      const shapesSeen = new Set();
+      const logShape = (evt) => {
+        const type = evt?.type || "(no type)";
+        if (shapesSeen.has(type)) return;
+        shapesSeen.add(type);
+        ctx.logger.info(
+          `benchgen[debug] ${type} keys=[${Object.keys(evt || {}).join(",")}] ` +
+            `agentId=${JSON.stringify(evt?.agentId)} sessionId=${JSON.stringify(evt?.sessionId)} ` +
+            `sessionKey=${JSON.stringify(evt?.sessionKey)}`,
+        );
+      };
+
+      unsubscribe = onInternalDiagnosticEvent((evt) => {
+        if (debugEvents) {
+          try {
+            logShape(evt);
+          } catch {
+            /* diagnostics must never break the pipeline */
+          }
+        }
+        engine?.handle(evt);
+      });
 
       // Idle reaper: ends observations orphaned by dropped start/complete events
       // (these event types are async-queued and droppable under load). Unref'd

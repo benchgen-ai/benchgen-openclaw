@@ -39,6 +39,8 @@
 import {
   compact,
   setTraceFields,
+  setTraceAgent,
+  agentIdOf,
   classifyToolType,
   usageDetails,
   toDate,
@@ -149,17 +151,21 @@ export function createTraceEngine(tracing, opts = {}) {
       compact({ asType: "agent", startTime: toDate(evt.ts) }),
     );
     setTraceFields(obs, name, sessionOf(evt));
+    setTraceAgent(obs, agentIdOf(evt));
     const entry = {
       obs,
       kind: "root",
       traceId: tid,
       named: Boolean(evt.channel),
       sessioned: Boolean(sessionOf(evt)),
+      // Like `named`/`sessioned`: events vary in what they carry, so the agent id
+      // may only turn up on a later one, and this records whether it landed.
+      agented: Boolean(agentIdOf(evt)),
       // Identity used to locate the session trajectory during finalization.
       // runId lets the resolver pick THIS turn's transcript entry instead of
       // whichever happens to be last-written (older turns can still be
       // in-flight/mid-write when this turn finalizes).
-      ctx: { sessionId: evt.sessionId, sessionKey: evt.sessionKey, agentId: evt.agentId, runId: evt.runId },
+      ctx: { sessionId: evt.sessionId, sessionKey: evt.sessionKey, agentId: agentIdOf(evt), runId: evt.runId },
       children: new Set(),
       runCompleted: false,
       ioSet: false,
@@ -190,9 +196,13 @@ export function createTraceEngine(tracing, opts = {}) {
       setTraceFields(root.obs, undefined, sessionOf(evt));
       root.sessioned = true;
     }
+    if (!root.agented && agentIdOf(evt)) {
+      setTraceAgent(root.obs, agentIdOf(evt));
+      root.agented = true;
+    }
     root.ctx.sessionId ??= evt.sessionId;
     root.ctx.sessionKey ??= evt.sessionKey;
-    root.ctx.agentId ??= evt.agentId;
+    root.ctx.agentId ??= agentIdOf(evt);
     root.ctx.runId ??= evt.runId;
   }
 

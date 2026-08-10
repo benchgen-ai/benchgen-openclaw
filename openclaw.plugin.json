@@ -27,7 +27,11 @@
       },
       "startupTrace": {
         "type": "boolean",
-        "description": "Send one trace on gateway startup, as proof the credentials and endpoint work. Defaults to true."
+        "description": "Send one trace whenever the plugin starts (including a config hot reload), as proof the credentials and endpoint work. Tagged benchgen-setup. Defaults to true."
+      },
+      "debugEvents": {
+        "type": "boolean",
+        "description": "Log the field names of the first diagnostic event of each type, to diagnose fields that arrive empty. No prompt or tool content is logged. Defaults to false."
       }
     }
   },
@@ -54,7 +58,7 @@
     },
     "startupTrace": {
       "label": "Send Startup Trace",
-      "help": "Sends one trace named benchgen.plugin.connected each time the gateway starts, so you can see straight away that the keys and endpoint work. Turn off if frequent restarts make it noisy."
+      "help": "Sends one trace named benchgen.plugin.connected, tagged benchgen-setup, each time the plugin starts — a config change counts, so you get a fresh verdict right after editing keys. Turn off if frequent restarts make it noisy."
     }
   }
 }

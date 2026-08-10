@@ -6,6 +6,41 @@
 // Langfuse OTel attribute keys (from @langfuse/core LangfuseOtelSpanAttributes).
 export const TRACE_NAME = "langfuse.trace.name";
 export const TRACE_SESSION_ID = "session.id";
+export const TRACE_TAGS = "langfuse.trace.tags";
+export const TRACE_USER_ID = "user.id";
+
+/**
+ * Tag prefix carrying OpenClaw's agent id.
+ *
+ * A bare id in a tag list reads as noise; prefixed, it is obvious what it names.
+ * The same id also goes to `user.id` (filterable) and into trace metadata
+ * (readable) — three placements because one Langfuse project can receive traffic
+ * from several OpenClaw agents, and until now nothing on the trace said which
+ * one produced it.
+ */
+export const AGENT_TAG_PREFIX = "agent:";
+
+/**
+ * OpenClaw's agent id for this event.
+ *
+ * `agentId` is only on *some* event types. Verified against OpenClaw 2026.7.2:
+ * `session.turn.created` and `tool.execution.*` carry it; `run.started`,
+ * `run.completed`, `context.assembled`, `model.usage` and `harness.run.*` do
+ * not. Reading the field alone therefore identifies a turn that happened to call
+ * a tool and leaves a plain question-and-answer turn anonymous — and the root
+ * observation, which is built from `run.started`, never gets it at all.
+ *
+ * `sessionKey` is on all of them and embeds the id:
+ * `agent:<agentId>:<surface>:<uuid>`. Parsing it makes identity available at the
+ * moment the trace is created rather than whenever a tool happens to run.
+ */
+export function agentIdOf(evt) {
+  if (evt?.agentId) return evt.agentId;
+  const key = evt?.sessionKey;
+  if (typeof key !== "string") return undefined;
+  const parts = key.split(":");
+  return parts[0] === "agent" && parts[1] ? parts[1] : undefined;
+}
 
 /** Drop undefined/null values so we never send empty fields to Langfuse. */
 export function compact(obj) {
@@ -29,6 +64,39 @@ export function setTraceFields(obs, name, sessionId) {
   if (sessionId !== undefined && sessionId !== null) {
     span.setAttribute(TRACE_SESSION_ID, sessionId);
   }
+}
+
+/**
+ * Tag a trace, via its root observation's span.
+ *
+ * Set on the span for the same reason `setTraceFields` is: Langfuse promotes
+ * these attributes to the trace, and we deliberately register no global OTel
+ * context manager. `string[]` is a native OTel attribute type, so the array goes
+ * over the wire as-is.
+ */
+/**
+ * Put OpenClaw's agent id on the trace three ways, from one call.
+ *
+ * `user.id` because that is what BenchGen's trace list already filters on, so
+ * per-agent filtering costs no UI work. A prefixed tag so the id is greppable in
+ * the tag filter too. Metadata is added by `runAttributes`, not here — it rides
+ * along with the rest of the run's fields.
+ *
+ * Only meaningful on a trace's root observation, like the helpers above.
+ */
+export function setTraceAgent(obs, agentId) {
+  const span = obs?.otelSpan;
+  if (!span || typeof span.setAttribute !== "function") return;
+  if (agentId === undefined || agentId === null || agentId === "") return;
+  span.setAttribute(TRACE_USER_ID, String(agentId));
+  setTraceTags(obs, [`${AGENT_TAG_PREFIX}${agentId}`]);
+}
+
+export function setTraceTags(obs, tags) {
+  const span = obs?.otelSpan;
+  if (!span || typeof span.setAttribute !== "function") return;
+  if (!Array.isArray(tags) || tags.length === 0) return;
+  span.setAttribute(TRACE_TAGS, tags);
 }
 
 // Tool names whose work is retrieval/search — these become Langfuse `retriever`
@@ -97,6 +165,11 @@ export function toolAttributes(evt) {
 export function runAttributes(evt) {
   return compact({
     metadata: compact({
+      // Also on the trace as `user.id` and as an `agent:` tag — this copy is the
+      // one you read when a trace is open, without decoding a tag. Resolved via
+      // `agentIdOf` because `run.started`, which builds the root, has no
+      // `agentId` field of its own.
+      agentId: agentIdOf(evt),
       runId: evt.runId,
       provider: evt.provider,
       model: evt.model,
