@@ -23,6 +23,7 @@
 import { openSync, readSync, readFileSync, statSync, closeSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 // Cap how much of a (potentially long-lived) legacy transcript file we read;
 // we only need the tail (most recent turns). Only used by the legacy
@@ -253,14 +254,66 @@ export function extractContent(events, runId) {
 // back to a direct legacy .trajectory.jsonl read for older hosts.
 // ---------------------------------------------------------------------------
 
+const SDK_TRANSCRIPT_SUBPATH = "plugin-sdk/session-transcript-runtime.js";
+
+/**
+ * Specifiers to try, in order, when loading the host's transcript SDK.
+ *
+ * The bare specifier only resolves when the plugin's directory has the host on
+ * its `node_modules` walk-up chain. That holds for npm-project installs (the
+ * host symlinks `<stateDir>/npm/node_modules/openclaw` -> its install root),
+ * but NOT for extension installs under `<stateDir>/extensions/<id>/`: that
+ * symlink is not on their chain, so the import fails, the legacy
+ * `.trajectory.jsonl` fallback finds nothing on SQLite-backed hosts, and every
+ * span silently ships with empty input/output.
+ *
+ * So we also derive absolute paths from the running host process itself — the
+ * plugin is loaded in-process, so the host's own `dist/` is always on disk near
+ * `process.argv[1]` (e.g. `/app/dist/index.js` -> `/app/dist/plugin-sdk/...`).
+ */
+function* sdkTranscriptSpecifiers() {
+  yield "openclaw/plugin-sdk/session-transcript-runtime";
+
+  const seen = new Set();
+  for (const start of [process.argv[1], process.cwd()]) {
+    if (!start) continue;
+    let dir = path.resolve(start);
+    // argv[1] is a file; cwd is a directory. Walking up from either covers both.
+    for (let depth = 0; depth < 6; depth++) {
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+      for (const base of [dir, path.join(dir, "dist")]) {
+        const file = path.join(base, SDK_TRANSCRIPT_SUBPATH);
+        if (seen.has(file)) continue;
+        seen.add(file);
+        yield pathToFileURL(file).href;
+      }
+    }
+  }
+}
+
 // Lazily & safely import the modern session-transcript-runtime SDK surface.
-// Hosts on OpenClaw <2026.7 may not expose this subpath at all; import
-// failure just means "use the legacy file fallback below".
+// Hosts on OpenClaw <2026.7 may not expose this subpath at all; failing every
+// candidate just means "use the legacy file fallback below".
 let sdkModulePromise;
-function loadSdkTranscriptModule() {
-  sdkModulePromise ??= import("openclaw/plugin-sdk/session-transcript-runtime").catch(
-    () => null,
-  );
+function loadSdkTranscriptModule(logger) {
+  sdkModulePromise ??= (async () => {
+    const tried = [];
+    for (const spec of sdkTranscriptSpecifiers()) {
+      try {
+        const mod = await import(spec);
+        if (mod && typeof mod.readSessionTranscriptEvents === "function") return mod;
+        tried.push(`${spec}: no readSessionTranscriptEvents export`);
+      } catch (err) {
+        tried.push(`${spec}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    // Listing every specifier tried is the point: a silent miss here is exactly
+    // how empty input/output reaches the trace with nothing to explain it.
+    logger?.debug?.(`benchgen: transcript SDK unavailable (${tried.join("; ")})`);
+    return null;
+  })();
   return sdkModulePromise;
 }
 
@@ -308,7 +361,7 @@ async function readTranscriptEvents(stateDir, evt, logger) {
   const sessionId = evt?.sessionId ?? evt?.sessionKey;
   if (!sessionId) return null;
 
-  const sdk = await loadSdkTranscriptModule();
+  const sdk = await loadSdkTranscriptModule(logger);
   if (sdk && typeof sdk.readSessionTranscriptEvents === "function") {
     try {
       const events = await sdk.readSessionTranscriptEvents({
