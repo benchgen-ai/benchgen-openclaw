@@ -35,9 +35,6 @@
       "npmSpec": "@benchgen/benchgen-openclaw",
       "defaultChoice": "npm",
       "minHostVersion": ">=2026.6.1"
-    },
-    "release": {
-      "publishToNpm": true
     }
   },
   "scripts": {
