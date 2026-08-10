@@ -24,6 +24,10 @@
       "baseUrl": {
         "type": "string",
         "description": "Benchgen ingest endpoint. Falls back to BENCHGEN_BASE_URL."
+      },
+      "startupTrace": {
+        "type": "boolean",
+        "description": "Send one trace on gateway startup, as proof the credentials and endpoint work. Defaults to true."
       }
     }
   },
@@ -47,6 +51,10 @@
       "label": "Benchgen Endpoint",
       "placeholder": "https://benchgen.com",
       "help": "Your Benchgen endpoint URL. Falls back to BENCHGEN_BASE_URL."
+    },
+    "startupTrace": {
+      "label": "Send Startup Trace",
+      "help": "Sends one trace named benchgen.plugin.connected each time the gateway starts, so you can see straight away that the keys and endpoint work. Turn off if frequent restarts make it noisy."
     }
   }
 }

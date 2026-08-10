@@ -28,10 +28,16 @@ import {
   setLangfuseTracerProvider,
 } from "@langfuse/tracing";
 import { createTraceEngine } from "./tracer.js";
+import { compact, setTraceFields } from "./mapping.js";
 import { makeContentResolver, makeToolIOResolver } from "./transcript.js";
 import { registerBenchgenCli } from "./cli.js";
 
 const DEFAULT_BASE_URL = "https://benchgen.com";
+
+// Name of the handshake trace sent once the exporter is live. Distinct from
+// anything the engine emits (it names traces after the channel), so it is easy
+// to spot in the list — and to filter out.
+const STARTUP_TRACE_NAME = "benchgen.plugin.connected";
 
 // How often the idle reaper ends dangling observations (orphaned by dropped
 // start/complete events). Kept well under the engine's TTL.
@@ -77,7 +83,58 @@ function resolveConfig(pluginConfig) {
     publicKey: cfg.publicKey ?? process.env.BENCHGEN_PUBLIC_KEY,
     secretKey: cfg.secretKey ?? process.env.BENCHGEN_SECRET_KEY,
     baseUrl: cfg.baseUrl ?? process.env.BENCHGEN_BASE_URL ?? DEFAULT_BASE_URL,
+    // Defaults on: the first thing anyone wants after configuring this is
+    // evidence that it worked. Off is for gateways that restart often enough
+    // for the handshake to be noise.
+    startupTrace:
+      typeof cfg.startupTrace === "boolean" ? cfg.startupTrace : true,
   };
+}
+
+/**
+ * Emit one trace as soon as the exporter is live, to prove the gateway is wired
+ * up.
+ *
+ * Until something arrives, a correctly configured gateway and one that never
+ * loaded this plugin look identical from Benchgen's side — an empty trace list.
+ * Every step in between is invisible from there: keys pasted, env set, config
+ * applied, gateway restarted, plugin loaded, exporter constructed. This is the
+ * one point in the whole chain that knows all of them succeeded, so it is the
+ * only place that can honestly say so.
+ *
+ * Force-flushed instead of left to the batch processor, because the entire value
+ * is landing while somebody is still watching the page they just configured.
+ *
+ * Never allowed to fail the service. A transient network fault at boot would
+ * stop this handshake while leaving real streaming perfectly able to recover, and
+ * refusing to start over a failed diagnostic trades a nicety for an outage.
+ */
+async function emitStartupTrace({ ctx, spanProcessor, baseUrl }) {
+  try {
+    const obs = startObservation(
+      STARTUP_TRACE_NAME,
+      compact({
+        input: "Gateway startup handshake",
+        output: `Plugin loaded and streaming to ${baseUrl}`,
+        metadata: compact({
+          source: "benchgen-openclaw",
+          purpose: "setup verification",
+          baseUrl,
+        }),
+      }),
+      compact({ asType: "agent", startTime: new Date() }),
+    );
+    setTraceFields(obs, STARTUP_TRACE_NAME, undefined);
+    obs.end(new Date());
+    await spanProcessor.forceFlush();
+    ctx.logger.info(
+      `benchgen: sent startup trace "${STARTUP_TRACE_NAME}" to ${baseUrl}`,
+    );
+  } catch (err) {
+    ctx.logger.warn(
+      `benchgen: startup trace failed, streaming is still active: ${err?.message ?? err}`,
+    );
+  }
 }
 
 function createBenchgenService(getPluginConfig) {
@@ -96,9 +153,8 @@ function createBenchgenService(getPluginConfig) {
     id: "benchgen",
 
     async start(ctx) {
-      const { enabled, publicKey, secretKey, baseUrl } = resolveConfig(
-        getPluginConfig(),
-      );
+      const { enabled, publicKey, secretKey, baseUrl, startupTrace } =
+        resolveConfig(getPluginConfig());
 
       if (!enabled) {
         ctx.logger.info("benchgen: disabled via config (enabled === false); not starting");
@@ -158,6 +214,14 @@ function createBenchgenService(getPluginConfig) {
       ctx.logger.info(
         `benchgen: subscribed to diagnostics; streaming nested run traces to ${baseUrl}`,
       );
+
+      // After subscribing, and deliberately not awaited: the flush is a network
+      // round trip, and `start` is awaited by the host. Holding gateway startup
+      // open for a diagnostic would be the wrong trade — and events arriving
+      // during the flush are already being captured by the subscription above.
+      if (startupTrace) {
+        void emitStartupTrace({ ctx, spanProcessor, baseUrl });
+      }
     },
 
     async stop() {
