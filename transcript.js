@@ -47,6 +47,24 @@ export function trajectoryPath(stateDir, agentId, sessionId) {
   );
 }
 
+/**
+ * Every on-disk layout a legacy transcript is known to use, in probe order.
+ *
+ * The nested `agents/<agentId>/sessions/` layout is not universal: OpenClaw
+ * 2026.6.x writes the file flat in the state-dir root
+ * (`~/.openclaw/<sessionId>.trajectory.jsonl`). Probing only the nested path
+ * there finds nothing, and because this module is best-effort the miss is
+ * silent — spans just ship with empty input/output. So try both and use
+ * whichever exists.
+ */
+export function trajectoryPathCandidates(stateDir, agentId, sessionId) {
+  const root = resolveStateDir(stateDir);
+  return [
+    trajectoryPath(root, agentId, sessionId),
+    path.join(root, `${sessionId}.trajectory.jsonl`),
+  ];
+}
+
 /** Read a byte window of a file as UTF-8 text. `from: "head" | "tail"`. */
 function readWindow(file, maxBytes, from) {
   const { size } = statSync(file);
@@ -249,27 +267,33 @@ function loadSdkTranscriptModule() {
 /** Read + parse a legacy per-session .trajectory.jsonl file into events.
  * Returns an array of parsed events, or null. Never throws. */
 function readLegacyTrajectoryEvents(stateDir, evt, logger) {
-  try {
-    const sessionId = evt?.sessionId ?? evt?.sessionKey;
-    if (!sessionId) return null;
-    const file = trajectoryPath(stateDir, evt?.agentId, sessionId);
-    const { size } = statSync(file);
-    const text =
-      size <= MAX_READ_BYTES ? readFileSync(file, "utf8") : readWindow(file, MAX_READ_BYTES, "tail");
-    return text
-      .split("\n")
-      .map(parseLine)
-      .filter((obj) => obj !== null);
-  } catch (err) {
-    // File may not exist (expected on 2026.7+ SQLite-backed hosts) or be
-    // mid-write; this is best-effort.
-    logger?.debug?.(
-      `benchgen: legacy transcript read failed (${
-        err instanceof Error ? err.message : String(err)
-      })`,
-    );
-    return null;
+  const sessionId = evt?.sessionId ?? evt?.sessionKey;
+  if (!sessionId) return null;
+
+  const candidates = trajectoryPathCandidates(stateDir, evt?.agentId, sessionId);
+  const misses = [];
+  for (const file of candidates) {
+    try {
+      const { size } = statSync(file);
+      const text =
+        size <= MAX_READ_BYTES
+          ? readFileSync(file, "utf8")
+          : readWindow(file, MAX_READ_BYTES, "tail");
+      return text
+        .split("\n")
+        .map(parseLine)
+        .filter((obj) => obj !== null);
+    } catch (err) {
+      // This layout may not exist (expected on 2026.7+ SQLite-backed hosts, and
+      // for whichever of the two layouts this host does not use) or the file may
+      // be mid-write; this is best-effort, so try the next one.
+      misses.push(`${file}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
+  // Listing every path tried is the point: a silent miss here is exactly how
+  // empty input/output reaches Langfuse with nothing to explain it.
+  logger?.debug?.(`benchgen: legacy transcript read failed (${misses.join("; ")})`);
+  return null;
 }
 
 /**

@@ -169,6 +169,15 @@ export function createTraceEngine(tracing, opts = {}) {
       children: new Set(),
       runCompleted: false,
       ioSet: false,
+      // Whether this turn produced a usage-backed generation. When it did not,
+      // finalization synthesizes one, so a run whose provider reports no token
+      // counts still shows its prompt and response.
+      sawUsage: false,
+      // Model/provider as carried by any event of this turn (model.call.*,
+      // model.usage); names the synthesized generation.
+      model: undefined,
+      provider: undefined,
+      startMs: evt.ts,
       finalizeScheduled: false,
       endMs: undefined,
       keys: [],
@@ -204,6 +213,8 @@ export function createTraceEngine(tracing, opts = {}) {
     root.ctx.sessionKey ??= evt.sessionKey;
     root.ctx.agentId ??= agentIdOf(evt);
     root.ctx.runId ??= evt.runId;
+    root.model ??= evt.model;
+    root.provider ??= evt.provider;
   }
 
   /**
@@ -319,8 +330,47 @@ export function createTraceEngine(tracing, opts = {}) {
     }
     if (root.ended) return; // ended by another path while we were awaiting
     setRootIO(root, content);
+    synthesizeGeneration(root, content);
     await enrichAndEndTools(root);
     endEntry(root, root.endMs ?? now(), true);
+  }
+
+  /**
+   * Add the turn's generation when `model.usage` never arrived.
+   *
+   * The host only emits that event when the run reports a non-zero token
+   * counter, so a provider that returns no usage (a gateway that drops it, a
+   * local model) silently costs the trace its entire prompt/response pair —
+   * the trace keeps its tools and its structure and says nothing about what was
+   * asked or answered. Missing token counts should cost the numbers, not the
+   * conversation: build the generation from the transcript content and leave
+   * usage/cost off it, so a span with no `usageDetails` reads as "unknown",
+   * which is the truth.
+   */
+  function synthesizeGeneration(root, content) {
+    if (!root || root.ended || root.sawUsage || !content) return;
+    const io = compact({ input: content.input, output: content.output });
+    if (Object.keys(io).length === 0) return;
+    const endMs = root.endMs ?? now();
+    try {
+      const entry = createChild(
+        { ts: endMs, trace: { traceId: root.traceId } },
+        root,
+        {
+          name: root.model ?? "model",
+          asType: "generation",
+          attributes: compact({
+            ...io,
+            model: root.model,
+            metadata: compact({ provider: root.provider, usageReported: false }),
+          }),
+          startMs: root.startMs ?? endMs,
+        },
+      );
+      endEntry(entry, endMs);
+    } catch {
+      /* best-effort; a missing generation must never break finalization */
+    }
   }
 
   // --- event handlers --------------------------------------------------------
@@ -364,6 +414,7 @@ export function createTraceEngine(tracing, opts = {}) {
   // is written — so this is where we reliably populate IO across the trace.
   function onModelUsage(evt) {
     const root = ensureRoot(evt);
+    if (root) root.sawUsage = true; // finalization must not add a second one
     const entry = createChild(evt, root, {
       name: evt.model ?? "model.usage",
       asType: "generation",
@@ -529,6 +580,14 @@ export function createTraceEngine(tracing, opts = {}) {
           return true;
         case "model.call.error":
           onModelCallError(evt);
+          return true;
+        // No observation of their own (that is model.usage's job), but they are
+        // the only events that name the model on a turn whose provider reports
+        // no usage — record them so a synthesized generation is not called
+        // "model".
+        case "model.call.started":
+        case "model.call.completed":
+          ensureRoot(evt);
           return true;
         case "model.usage":
           onModelUsage(evt);
