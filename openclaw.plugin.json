@@ -1,7 +1,7 @@
 {
   "id": "benchgen",
   "name": "Benchgen",
-  "description": "Stream OpenClaw agent traces to Benchgen for observability and training-data capture",
+  "description": "Stream OpenClaw agent traces to Benchgen and let Benchgen chat with the agent",
   "activation": {
     "onStartup": true
   },
@@ -32,6 +32,41 @@
       "debugEvents": {
         "type": "boolean",
         "description": "Log the field names of the first diagnostic event of each type, to diagnose fields that arrive empty. No prompt or tool content is logged. Defaults to false."
+      },
+      "chat": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Benchgen chat bridge: lets Benchgen send messages to this agent and receive its replies.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable the chat bridge (relay + gateway endpoint). Defaults to true. Falls back to BENCHGEN_CHAT_ENABLED."
+          },
+          "relay": {
+            "type": "boolean",
+            "description": "Keep an outbound WebSocket to Benchgen so it can reach this gateway even behind NAT. Defaults to true."
+          },
+          "url": {
+            "type": "string",
+            "description": "Relay WebSocket URL. Defaults to wss://<baseUrl host>/api/public/openclaw/chat. Falls back to BENCHGEN_CHAT_URL."
+          },
+          "httpEndpoint": {
+            "type": "boolean",
+            "description": "Serve POST /benchgen/chat on the gateway port (authorized with the Benchgen keys) for direct calls. Defaults to true."
+          },
+          "sessionScope": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "main"
+            ],
+            "description": "\"conversation\" (default): each Benchgen conversation gets its own agent session. \"main\": all chat lands in the agent's main session."
+          },
+          "agentId": {
+            "type": "string",
+            "description": "Agent that answers Benchgen messages when the message names none. Defaults to the routed/default agent."
+          }
+        }
       }
     }
   },
@@ -53,12 +88,25 @@
     },
     "baseUrl": {
       "label": "Benchgen Endpoint",
-      "placeholder": "https://benchgen.com",
+      "placeholder": "https://traces.benchgen.com",
       "help": "Your Benchgen endpoint URL. Falls back to BENCHGEN_BASE_URL."
     },
     "startupTrace": {
       "label": "Send Startup Trace",
       "help": "Sends one trace named benchgen.plugin.connected, tagged benchgen-setup, each time the plugin starts — a config change counts, so you get a fresh verdict right after editing keys. Turn off if frequent restarts make it noisy."
+    },
+    "chat.enabled": {
+      "label": "Chat with Benchgen",
+      "help": "Let Benchgen send messages to this agent and stream the replies back (relay + gateway endpoint)."
+    },
+    "chat.url": {
+      "label": "Chat relay URL",
+      "placeholder": "wss://benchgen.com/api/public/openclaw/chat",
+      "help": "Outbound WebSocket the plugin keeps open to Benchgen. Leave empty to derive it from the endpoint URL."
+    },
+    "chat.sessionScope": {
+      "label": "Chat session scope",
+      "help": "conversation: one agent session per Benchgen conversation (recommended). main: share the agent's main session."
     }
   }
 }

@@ -1,7 +1,7 @@
 {
   "name": "@benchgen/benchgen-openclaw",
-  "version": "0.2.2",
-  "description": "Stream OpenClaw agent traces to Benchgen for observability and training-data capture",
+  "version": "0.3.0",
+  "description": "Stream OpenClaw agent traces to Benchgen and let Benchgen chat with the agent",
   "type": "module",
   "main": "index.js",
   "publishConfig": {
@@ -14,6 +14,7 @@
     "tracer.js",
     "mapping.js",
     "transcript.js",
+    "chat.js",
     "openclaw.plugin.json",
     "README.md",
     "LICENSE"
@@ -47,7 +48,9 @@
     "observability",
     "llm",
     "tracing",
-    "diagnostics"
+    "diagnostics",
+    "chat",
+    "agent-bridge"
   ],
   "repository": {
     "type": "git",
@@ -63,6 +66,7 @@
     "@langfuse/otel": "^5.9.0",
     "@langfuse/tracing": "^5.9.0",
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/sdk-trace-node": "^2.8.0"
+    "@opentelemetry/sdk-trace-node": "^2.8.0",
+    "ws": "^8.18.0"
   }
 }

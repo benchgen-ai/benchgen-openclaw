@@ -41,6 +41,7 @@ import {
   setTraceFields,
   setTraceAgent,
   agentIdOf,
+  channelTags,
   classifyToolType,
   usageDetails,
   toDate,
@@ -151,12 +152,13 @@ export function createTraceEngine(tracing, opts = {}) {
       compact({ asType: "agent", startTime: toDate(evt.ts) }),
     );
     setTraceFields(obs, name, sessionOf(evt));
-    setTraceAgent(obs, agentIdOf(evt));
+    setTraceAgent(obs, agentIdOf(evt), channelTags(evt));
     const entry = {
       obs,
       kind: "root",
       traceId: tid,
       named: Boolean(evt.channel),
+      channel: evt.channel,
       sessioned: Boolean(sessionOf(evt)),
       // Like `named`/`sessioned`: events vary in what they carry, so the agent id
       // may only turn up on a later one, and this records whether it landed.
@@ -192,6 +194,7 @@ export function createTraceEngine(tracing, opts = {}) {
   /** Fill in the root's name/session/ctx once an event carries them (events vary). */
   function maybeRefreshRoot(root, evt) {
     if (root.ended) return;
+    let retag = false;
     if (!root.named && evt.channel) {
       try {
         root.obs.update({ name: evt.channel });
@@ -200,14 +203,21 @@ export function createTraceEngine(tracing, opts = {}) {
         /* best-effort */
       }
       root.named = true;
+      root.channel = evt.channel;
+      retag = true; // the channel may imply a tag (chat), and it arrived late
+    }
+    if (!root.agented && agentIdOf(evt)) {
+      root.agented = true;
+      retag = true;
+    }
+    if (retag) {
+      // Tags are one attribute and setting replaces, so always write the full
+      // list: agent tag + whatever the channel implies.
+      setTraceAgent(root.obs, root.ctx.agentId ?? agentIdOf(evt), channelTags({ channel: root.channel }));
     }
     if (!root.sessioned && sessionOf(evt)) {
       setTraceFields(root.obs, undefined, sessionOf(evt));
       root.sessioned = true;
-    }
-    if (!root.agented && agentIdOf(evt)) {
-      setTraceAgent(root.obs, agentIdOf(evt));
-      root.agented = true;
     }
     root.ctx.sessionId ??= evt.sessionId;
     root.ctx.sessionKey ??= evt.sessionKey;

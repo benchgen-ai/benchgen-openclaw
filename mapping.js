@@ -84,12 +84,28 @@ export function setTraceFields(obs, name, sessionId) {
  *
  * Only meaningful on a trace's root observation, like the helpers above.
  */
-export function setTraceAgent(obs, agentId) {
+export function setTraceAgent(obs, agentId, extraTags = []) {
   const span = obs?.otelSpan;
   if (!span || typeof span.setAttribute !== "function") return;
-  if (agentId === undefined || agentId === null || agentId === "") return;
+  if (agentId === undefined || agentId === null || agentId === "") {
+    setTraceTags(obs, extraTags);
+    return;
+  }
   span.setAttribute(TRACE_USER_ID, String(agentId));
-  setTraceTags(obs, [`${AGENT_TAG_PREFIX}${agentId}`]);
+  setTraceTags(obs, [`${AGENT_TAG_PREFIX}${agentId}`, ...extraTags]);
+}
+
+/**
+ * Tag put on every trace whose turn came in through the Benchgen chat bridge
+ * (channel "benchgen"), so chat traffic can be told apart from — or narrowed
+ * to — the agent's other channels in the trace list. Chat and trace share the
+ * conversation id through the session key.
+ */
+export const CHAT_TRACE_TAG = "benchgen-chat";
+
+/** Extra trace tags implied by the event's channel (currently only chat). */
+export function channelTags(evt) {
+  return evt?.channel === "benchgen" ? [CHAT_TRACE_TAG] : [];
 }
 
 export function setTraceTags(obs, tags) {

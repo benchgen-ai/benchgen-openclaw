@@ -9,10 +9,11 @@
 //   3. Endpoint (optional, defaults to Benchgen cloud)
 // Keys are validated against the ingest health endpoint before saving.
 
+import { DEFAULT_RELAY_URL } from "./chat.js";
 import * as p from "@clack/prompts";
 
 const BENCHGEN_PLUGIN_ID = "benchgen";
-const DEFAULT_BASE_URL = "https://benchgen.com";
+const DEFAULT_BASE_URL = "https://traces.benchgen.com";
 const BENCHGEN_DASHBOARD_URL = "https://app.benchgen.com";
 
 function asObject(value) {
@@ -130,7 +131,7 @@ export async function runBenchgenConfigure(deps) {
       try {
         new URL(value.trim());
       } catch {
-        return "Invalid URL format (e.g. https://benchgen.com)";
+        return "Invalid URL format (e.g. https://traces.benchgen.com)";
       }
     },
   });
@@ -139,6 +140,53 @@ export async function runBenchgenConfigure(deps) {
     return;
   }
   const baseUrl = normalizeUrl((baseUrlInput || DEFAULT_BASE_URL).trim());
+
+  // Chat is on by default; the question exists so the operator knows the keys
+  // now also let Benchgen talk to the agent, and can opt out here rather than
+  // by discovering `chat.enabled` in the schema later.
+  const existingChat = asObject(existing.chat);
+  const chatInput = await p.confirm({
+    message: "Allow Benchgen to chat with this agent (relay + POST /benchgen/chat)?",
+    initialValue: existingChat.enabled !== false,
+  });
+  if (p.isCancel(chatInput)) {
+    p.cancel("Setup cancelled.");
+    return;
+  }
+  const chatEnabled = chatInput === true;
+
+  // The relay is per BenchGen deployment (dev/UAT/prod live on different
+  // hosts); the agent page's Observability card shows the right value as
+  // BENCHGEN_CHAT_URL. Enter keeps whatever is in effect now.
+  let chatUrl = existingChat.url;
+  if (chatEnabled) {
+    const currentUrl =
+      (typeof existingChat.url === "string" && existingChat.url) ||
+      process.env.BENCHGEN_CHAT_URL ||
+      DEFAULT_RELAY_URL;
+    const chatUrlInput = await p.text({
+      message: "Chat relay URL (from the agent page; press Enter to keep):",
+      placeholder: DEFAULT_RELAY_URL,
+      initialValue: currentUrl,
+      validate(value) {
+        if (!value || !value.trim()) return undefined;
+        try {
+          const u = new URL(value.trim());
+          if (u.protocol !== "wss:" && u.protocol !== "ws:") return "Must be a ws:// or wss:// URL";
+        } catch {
+          return "Invalid URL format (e.g. wss://benchgen.com/api/public/openclaw/chat)";
+        }
+      },
+    });
+    if (p.isCancel(chatUrlInput)) {
+      p.cancel("Setup cancelled.");
+      return;
+    }
+    const typed = (chatUrlInput || "").trim();
+    // Only pin a URL that differs from the built-in default, so a later plugin
+    // release can move the default without stale pins in every config.
+    chatUrl = typed && typed !== DEFAULT_RELAY_URL ? typed : undefined;
+  }
 
   // Validate connectivity + keys (best-effort — allow saving on failure).
   const spinner = p.spinner();
@@ -162,7 +210,16 @@ export async function runBenchgenConfigure(deps) {
     mutate(draft) {
       const next = setBenchgenPluginEntry(
         draft,
-        { enabled: true, publicKey, secretKey, baseUrl },
+        {
+          enabled: true,
+          publicKey,
+          secretKey,
+          baseUrl,
+          chat: (() => {
+            const { url: _stale, ...rest } = asObject(existingChat);
+            return chatUrl ? { ...rest, enabled: chatEnabled, url: chatUrl } : { ...rest, enabled: chatEnabled };
+          })(),
+        },
         true,
       );
       Object.assign(draft, next);
@@ -174,6 +231,8 @@ export async function runBenchgenConfigure(deps) {
       `Endpoint:    ${baseUrl}`,
       `Public key:  ${publicKey}`,
       `Secret key:  ***`,
+      `Chat:        ${chatEnabled ? "enabled" : "disabled"}`,
+      ...(chatEnabled ? [`Relay:       ${chatUrl ?? DEFAULT_RELAY_URL}`] : []),
       "",
       `Dashboard:   ${BENCHGEN_DASHBOARD_URL}`,
     ].join("\n"),
@@ -201,6 +260,9 @@ export function showBenchgenStatus(deps) {
 
   const enabled = entry.enabled !== false && cfg.enabled !== false;
   const source = (fromConfig) => (fromConfig ? "config" : "env");
+  const chat = asObject(cfg.chat);
+  const chatEnabled = enabled && chat.enabled !== false;
+  const chatUrl = chat.url ?? process.env.BENCHGEN_CHAT_URL ?? DEFAULT_RELAY_URL;
 
   const lines = [
     "Benchgen configuration:",
@@ -208,6 +270,14 @@ export function showBenchgenStatus(deps) {
     `  Endpoint:    ${baseUrl}`,
     `  Public key:  ${publicKey ? `${publicKey} (${source(cfg.publicKey != null)})` : "(not set)"}`,
     `  Secret key:  ${secretKey ? `*** (${source(cfg.secretKey != null)})` : "(not set)"}`,
+    `  Chat:        ${chatEnabled ? "enabled" : "disabled"}`,
+    ...(chatEnabled
+      ? [
+          `    Relay:     ${chat.relay === false ? "off" : chatUrl}`,
+          `    HTTP:      ${chat.httpEndpoint === false ? "off" : "POST /benchgen/chat on the gateway"}`,
+          `    Sessions:  ${chat.sessionScope === "main" ? "agent main session" : "one per conversation"}`,
+        ]
+      : []),
   ];
   console.log(lines.join("\n"));
 }

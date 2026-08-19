@@ -1,9 +1,18 @@
 // benchgen-openclaw
 //
-// Streams OpenClaw's internal diagnostics bus to Benchgen. Registers a
-// background service that subscribes to the diagnostics event stream and turns
-// each conversation turn into one nested trace (model calls, tool executions,
-// retrieval steps), grouped by session.
+// Two jobs, one plugin:
+//
+// 1. Traces — streams OpenClaw's internal diagnostics bus to Benchgen. Registers
+//    a background service that subscribes to the diagnostics event stream and
+//    turns each conversation turn into one nested trace (model calls, tool
+//    executions, retrieval steps), grouped by session.
+//
+// 2. Chat — lets Benchgen talk to the agent. The same service keeps an outbound
+//    WebSocket to Benchgen (relay) and serves `POST /benchgen/chat` on the
+//    gateway; messages arriving either way run as ordinary agent turns and the
+//    replies stream back. See chat.js. Chat turns run under channel "benchgen",
+//    so job 1 traces them like any other turn — the two are correlated by the
+//    session key.
 //
 // Transport: the service is built on an OpenTelemetry-based tracing SDK and runs
 // its SpanProcessor inside a dedicated, isolated TracerProvider so it never
@@ -31,8 +40,28 @@ import { createTraceEngine } from "./tracer.js";
 import { compact, setTraceFields, setTraceTags } from "./mapping.js";
 import { makeContentResolver, makeToolIOResolver } from "./transcript.js";
 import { registerBenchgenCli } from "./cli.js";
+import {
+  CHAT_HTTP_PATH,
+  createChatBridge,
+  createChatHttpHandler,
+  isAuthorizedChatRequest,
+  missingRuntimeCapabilities,
+  resolveChatConfig,
+} from "./chat.js";
+import { readFileSync } from "node:fs";
 
-const DEFAULT_BASE_URL = "https://benchgen.com";
+const DEFAULT_BASE_URL = "https://traces.benchgen.com";
+
+// Reported to Benchgen in the chat handshake and the relay headers. Read from
+// disk rather than imported with an attribute so the plugin loads under every
+// loader OpenClaw has shipped.
+const PLUGIN_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
+  } catch {
+    return undefined;
+  }
+})();
 
 // Name of the handshake trace sent once the exporter is live. Distinct from
 // anything the engine emits (it names traces after the channel), so it is easy
@@ -104,6 +133,11 @@ function resolveConfig(pluginConfig) {
   };
 }
 
+/** Effective chat-bridge settings (see chat.js for the field list). */
+function resolveChat(pluginConfig) {
+  return resolveChatConfig(pluginConfig, { baseUrl: resolveConfig(pluginConfig).baseUrl });
+}
+
 /**
  * Emit one trace as soon as the exporter is live, to prove the gateway is wired
  * up.
@@ -151,7 +185,47 @@ async function emitStartupTrace({ ctx, spanProcessor, baseUrl }) {
   }
 }
 
-function createBenchgenService(getPluginConfig) {
+/**
+ * Start the chat bridge for this service run, or explain (once, in the log) why
+ * it cannot. Never throws: chat is additive, and a problem here must not stop
+ * trace streaming.
+ */
+async function startChatBridge({ api, ctx, chat, publicKey, secretKey }) {
+  if (!chat.enabled) {
+    ctx.logger.info("benchgen chat: disabled via config (chat.enabled === false)");
+    return null;
+  }
+  const missing = missingRuntimeCapabilities(api.runtime);
+  if (missing.length > 0) {
+    ctx.logger.warn(
+      `benchgen chat: this OpenClaw does not expose ${missing.join(", ")}; chat bridge not started (traces unaffected)`,
+    );
+    return null;
+  }
+  const bridge = createChatBridge({
+    runtime: api.runtime,
+    // Live config: a hot reload of openclaw.json (new agent, new bindings) must
+    // be seen by the next turn, and this is the snapshot the host itself uses.
+    getConfig: () =>
+      typeof api.runtime?.config?.current === "function"
+        ? api.runtime.config.current()
+        : (ctx.config ?? api.config),
+    chatConfig: chat,
+    publicKey,
+    secretKey,
+    pluginVersion: PLUGIN_VERSION,
+    logger: ctx.logger,
+  });
+  try {
+    await bridge.start();
+  } catch (err) {
+    ctx.logger.warn(`benchgen chat: relay failed to start: ${err?.message ?? err}`);
+  }
+  return bridge;
+}
+
+function createBenchgenService(api, chatState) {
+  const getPluginConfig = () => api.pluginConfig;
   /** @type {import("@opentelemetry/sdk-trace-node").NodeTracerProvider | null} */
   let provider = null;
   /** @type {import("@langfuse/otel").LangfuseSpanProcessor | null} */
@@ -182,9 +256,19 @@ function createBenchgenService(getPluginConfig) {
         return;
       }
 
+      // Chat first: it needs the keys but not the diagnostics bus, so a gateway
+      // with diagnostics switched off can still be chatted with from Benchgen.
+      chatState.bridge = await startChatBridge({
+        api,
+        ctx,
+        chat: resolveChat(getPluginConfig()),
+        publicKey,
+        secretKey,
+      });
+
       if (!isDiagnosticsEnabled(ctx.config)) {
         ctx.logger.warn(
-          "benchgen: diagnostics are disabled (config.diagnostics.enabled === false); no events will be emitted, not starting",
+          "benchgen: diagnostics are disabled (config.diagnostics.enabled === false); no trace events will be emitted, tracing not started",
         );
         return;
       }
@@ -264,6 +348,16 @@ function createBenchgenService(getPluginConfig) {
     },
 
     async stop() {
+      // Chat: stop taking new relay messages first. Turns already running keep
+      // going until the host tears the process down; their remaining replies go
+      // to the relay outbox and are dropped with it.
+      const bridge = chatState.bridge;
+      chatState.bridge = null;
+      try {
+        await bridge?.stop();
+      } catch {
+        // best-effort
+      }
       try {
         unsubscribe?.();
       } finally {
@@ -309,7 +403,35 @@ export default definePluginEntry({
   description:
     "Stream OpenClaw agent traces to Benchgen for observability and training-data capture",
   register(api) {
-    api.registerService(createBenchgenService(() => api.pluginConfig));
+    // Shared between the service (which owns the bridge's lifetime) and the HTTP
+    // route (which OpenClaw wants registered at load time and which must keep
+    // answering — with 503 — while the service is stopped or restarting).
+    const chatState = { bridge: null };
+    api.registerService(createBenchgenService(api, chatState));
+
+    // Direct chat endpoint on the gateway port: POST /benchgen/chat, authorized
+    // with the Benchgen project keys (the gateway's own token is not involved —
+    // `auth: "plugin"` hands auth to us). Registered whenever the config asks
+    // for it; whether a bridge is live to serve it is the service's business.
+    const chat = resolveChat(api.pluginConfig);
+    if (chat.enabled && chat.httpEndpoint && typeof api.registerHttpRoute === "function") {
+      api.registerHttpRoute({
+        path: CHAT_HTTP_PATH,
+        auth: "plugin",
+        match: "exact",
+        replaceExisting: true,
+        handler: createChatHttpHandler({
+          getBridge: () => chatState.bridge,
+          // Keys resolved per request so a hot-reloaded key change applies at once.
+          authorize: (header) => {
+            const { publicKey, secretKey } = resolveConfig(api.pluginConfig);
+            return isAuthorizedChatRequest(header, { publicKey, secretKey });
+          },
+          logger: api.logger,
+        }),
+      });
+      api.logger?.info?.(`benchgen chat: registered ${CHAT_HTTP_PATH} on the gateway`);
+    }
 
     // Opik-style interactive setup: `openclaw benchgen configure` / `status`.
     // No manual openclaw.json editing required. Guarded so the plugin still
