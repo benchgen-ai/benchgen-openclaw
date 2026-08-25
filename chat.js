@@ -253,6 +253,26 @@ export function createTurnRunner({
   now = () => Date.now(),
 }) {
   const queues = new Map(); // conversationId -> tail promise
+  // sessionKey -> { id, name, conversationId } of the Benchgen user behind the
+  // session. The tracer reads it (`senderOf`) to put the user on the trace:
+  // runtime events carry the session key but not the sender, and the session
+  // key is the one thing both sides see. Bounded: a gateway that serves many
+  // users would otherwise grow this forever.
+  const senders = new Map();
+  const MAX_SENDERS = 5000;
+  function rememberSender(sessionKey, message) {
+    if (!sessionKey) return;
+    if (senders.size >= MAX_SENDERS) {
+      const oldest = senders.keys().next().value;
+      if (oldest !== undefined) senders.delete(oldest);
+    }
+    senders.delete(sessionKey); // re-insert so the map stays in recency order
+    senders.set(sessionKey, {
+      id: message.sender.id,
+      name: message.sender.name,
+      conversationId: message.conversationId,
+    });
+  }
 
   const safe = (fn, ...args) => {
     try {
@@ -350,6 +370,7 @@ export function createTurnRunner({
       },
     });
 
+    rememberSender(sessionKey, message);
     safe(sink.started, { sessionKey, agentId });
 
     const replies = { tool: 0, block: 0, final: 0 };
@@ -430,7 +451,12 @@ export function createTurnRunner({
     return run;
   }
 
-  return { runTurn, activeConversations: () => queues.size };
+  return {
+    runTurn,
+    activeConversations: () => queues.size,
+    /** Benchgen user behind a session key, if this runner dispatched it. */
+    senderOf: (sessionKey) => senders.get(sessionKey) ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -957,6 +983,7 @@ export function createChatBridge({
 
   return {
     runTurn: (message, sink) => runner.runTurn(message, sink),
+    senderOf: (sessionKey) => runner.senderOf(sessionKey),
 
     async start() {
       if (!chatConfig.relay) {

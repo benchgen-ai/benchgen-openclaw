@@ -295,6 +295,9 @@ function createBenchgenService(api, chatState) {
         logger: ctx.logger,
         resolveContent,
         resolveToolIO,
+        // Who is chatting, by session key (chat.js remembers it per turn).
+        // Read through chatState so the bridge may start after the engine.
+        resolveSender: (sessionKey) => chatState.bridge?.senderOf?.(sessionKey) ?? null,
       });
 
       // `onInternalDiagnosticEvent` invokes the listener as

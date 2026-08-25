@@ -257,6 +257,14 @@ test("turn runner: builds a per-conversation session and pipes the turn to the s
   assert.equal(result.sessionKey, "agent:main:benchgen:direct:conv-1");
   assert.equal(result.agentId, "main");
   assert.equal(result.dispatched, true);
+  // The tracer asks "who is behind this session?" by session key; the answer
+  // is the Benchgen user of the last turn on it, with the conversation id.
+  assert.deepEqual(runner.senderOf("agent:main:benchgen:direct:conv-1"), {
+    id: "u1",
+    name: "Ann",
+    conversationId: "conv-1",
+  });
+  assert.equal(runner.senderOf("agent:main:benchgen:direct:other"), null);
 
   const plan = runtime.calls.dispatch[0];
   assert.equal(plan.channel, CHAT_CHANNEL_ID);
@@ -807,4 +815,19 @@ test("tracer: a turn on channel benchgen carries the benchgen-chat tag next to t
   // Other channels: agent tag only.
   engine.handle({ type: "run.started", ts: 1, trace: { traceId: "t3" }, channel: "telegram", sessionKey: "agent:main:main" });
   assert.deepEqual(spans[2].attrs[TRACE_TAGS], ["agent:main"]);
+});
+
+test("setTraceUser: puts the Benchgen user on the trace, agent id stays the fallback", async () => {
+  const { setTraceUser, setTraceAgent, TRACE_USER_ID } = await import("./mapping.js");
+  const attrs = {};
+  const obs = { otelSpan: { setAttribute: (k, v) => { attrs[k] = v; } } };
+  setTraceAgent(obs, "main", ["benchgen-chat"]);
+  assert.equal(attrs[TRACE_USER_ID], "main");
+  setTraceUser(obs, { id: "ann@example.com", name: "Ann", conversationId: "conv-1" });
+  assert.equal(attrs[TRACE_USER_ID], "ann@example.com");
+  assert.equal(attrs["langfuse.trace.metadata.user_name"], "Ann");
+  // A run without a person (cron, heartbeat) leaves the agent id alone.
+  const attrs2 = {};
+  setTraceUser({ otelSpan: { setAttribute: (k, v) => { attrs2[k] = v; } } }, null);
+  assert.deepEqual(attrs2, {});
 });

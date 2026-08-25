@@ -1,6 +1,6 @@
 {
   "name": "@benchgen/benchgen-openclaw",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Stream OpenClaw agent traces to Benchgen and let Benchgen chat with the agent",
   "type": "module",
   "main": "index.js",

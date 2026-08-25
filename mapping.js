@@ -108,6 +108,20 @@ export function channelTags(evt) {
   return evt?.channel === "benchgen" ? [CHAT_TRACE_TAG] : [];
 }
 
+/**
+ * Put the Benchgen user behind a chat turn on the trace: Langfuse's `user.id`
+ * (its own per-user filter, which BenchGen forwards as `userId`) plus the
+ * display name in metadata. Only chat turns have a user; runs from cron,
+ * heartbeat or the CLI keep the agent id in `user.id` as before.
+ */
+export function setTraceUser(obs, sender) {
+  const span = obs?.otelSpan;
+  if (!span || typeof span.setAttribute !== "function") return;
+  if (!sender || !sender.id) return;
+  span.setAttribute(TRACE_USER_ID, String(sender.id));
+  if (sender.name) span.setAttribute("langfuse.trace.metadata.user_name", String(sender.name));
+}
+
 export function setTraceTags(obs, tags) {
   const span = obs?.otelSpan;
   if (!span || typeof span.setAttribute !== "function") return;

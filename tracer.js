@@ -40,6 +40,7 @@ import {
   compact,
   setTraceFields,
   setTraceAgent,
+  setTraceUser,
   agentIdOf,
   channelTags,
   classifyToolType,
@@ -77,7 +78,20 @@ export function createTraceEngine(tracing, opts = {}) {
     // the per-session trajectory (which carries prompt/response + tool I/O) has
     // been written. Injectable for tests; defaults to setImmediate.
     defer = (fn) => setImmediate(fn),
+    // (sessionKey) -> { id, name, conversationId } | null: who is chatting, from
+    // the chat bridge. Optional; without it traces carry the agent id only.
+    resolveSender = () => null,
   } = opts;
+
+  /** The Benchgen user behind a chat run, or null for every other run. */
+  function senderOf(evt) {
+    if (evt?.channel !== "benchgen") return null;
+    try {
+      return resolveSender(evt.sessionKey) ?? null;
+    } catch {
+      return null;
+    }
+  }
 
   // Live observation registry + lookup indexes. An Entry is:
   //   { obs, kind, traceId, keys:[], lastMs, ended }
@@ -153,6 +167,13 @@ export function createTraceEngine(tracing, opts = {}) {
     );
     setTraceFields(obs, name, sessionOf(evt));
     setTraceAgent(obs, agentIdOf(evt), channelTags(evt));
+    const sender = senderOf(evt);
+    if (sender) {
+      // Chat turn: the trace belongs to the person, and its session is the
+      // Benchgen conversation, not the gateway's internal session key.
+      setTraceUser(obs, sender);
+      if (sender.conversationId) setTraceFields(obs, undefined, sender.conversationId);
+    }
     const entry = {
       obs,
       kind: "root",
@@ -214,6 +235,14 @@ export function createTraceEngine(tracing, opts = {}) {
       // Tags are one attribute and setting replaces, so always write the full
       // list: agent tag + whatever the channel implies.
       setTraceAgent(root.obs, root.ctx.agentId ?? agentIdOf(evt), channelTags({ channel: root.channel }));
+      // The channel (and with it the user) can arrive on a later event, and
+      // setTraceAgent just rewrote user.id to the agent id: put the person back.
+      const sender = senderOf({ channel: root.channel, sessionKey: evt.sessionKey ?? root.ctx.sessionKey });
+      if (sender) {
+        setTraceUser(root.obs, sender);
+        if (sender.conversationId) setTraceFields(root.obs, undefined, sender.conversationId);
+        root.sessioned = true;
+      }
     }
     if (!root.sessioned && sessionOf(evt)) {
       setTraceFields(root.obs, undefined, sessionOf(evt));

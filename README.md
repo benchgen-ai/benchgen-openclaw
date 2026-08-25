@@ -10,7 +10,7 @@
 
 <p align="center">
   Stream <a href="https://github.com/openclaw/openclaw">OpenClaw</a> agent traces to <br/>
-  <a href="https://benchgen.com">Benchgen</a> for observability and training-data capture —<br/>
+  <a href="https://benchgen.com">Benchgen</a> for observability and training-data capture,<br/>
   and let Benchgen chat with your agent.
 </p>
 
@@ -21,11 +21,20 @@
 
 </div>
 
+
+## What is new in 0.4.0
+
+Chat turns that arrive through the BenchGen relay now carry the person on the
+trace: Langfuse `userId` is the BenchGen account (the relay sends the platform
+email as the sender id), `sessionId` is the BenchGen chat, and the display name
+sits in the trace metadata as `user_name`. Runs without a person (cron, heartbeat,
+CLI) keep the OpenClaw agent id in `userId`, as before. Nothing to configure.
+
 ## Why This Plugin
 
 The plugin runs inside the OpenClaw Gateway process. It subscribes to the
 diagnostics event stream and turns each conversation turn into one nested trace
-— model calls, tool executions, and retrieval steps — grouped by session. Those
+(model calls, tool executions, and retrieval steps) grouped by session. Those
 traces flow to your Benchgen project, where they can be viewed and exported for
 analysis, SFT, and RL fine-tuning.
 
@@ -52,13 +61,15 @@ If your gateway is remote, install and configure the plugin on that host.
 
 Prerequisites:
 
-- OpenClaw `>=2026.6.1`
+- OpenClaw `>=2026.6.1` for traces; `>=2026.7.2` for chat (the chat bridge needs
+  `api.runtime.channel.inbound.dispatch`, which `2026.7.1` does not expose; the
+  plugin logs this and keeps streaming traces)
 - Node.js `>=22.12.0`
 
 ### 1. Install the plugin in OpenClaw
 
 ```bash
-openclaw plugins install benchgen-openclaw
+openclaw plugins install @benchgen/benchgen-openclaw
 ```
 
 If the Gateway is already running, restart it after install.
@@ -69,10 +80,12 @@ If the Gateway is already running, restart it after install.
 openclaw benchgen configure
 ```
 
-Paste your project's **public key** and **secret key** from the Benchgen
-dashboard. The wizard verifies the keys against the ingest endpoint, asks
-whether Benchgen may chat with the agent (default: yes), and writes it all into
-your OpenClaw config — no manual JSON editing. Restart the gateway to apply.
+Paste the agent's **public key** and **secret key** from the Observability card
+on its Benchgen page. The wizard verifies the keys against the ingest endpoint,
+asks whether Benchgen may chat with the agent (default: yes) and for the chat
+relay URL (the card's `BENCHGEN_CHAT_URL`; Enter keeps the built-in default,
+which is the production relay), and writes it all into your OpenClaw config, no
+manual JSON editing. Restart the gateway to apply.
 
 ### 3. Check effective settings
 
@@ -121,7 +134,7 @@ Chat keys (all optional, under `config.chat`):
 | --- | --- | --- |
 | `enabled` | Chat bridge on/off (relay + gateway endpoint) | `true` |
 | `relay` | Keep an outbound WebSocket to Benchgen so it can reach this gateway behind NAT | `true` |
-| `url` | Relay WebSocket URL — the agent page's Observability card shows the one for your BenchGen environment (`BENCHGEN_CHAT_URL`); `configure` asks for it | `wss://benchgen.com/api/public/openclaw/chat` |
+| `url` | Relay WebSocket URL; the agent page's Observability card shows the one for your BenchGen environment (`BENCHGEN_CHAT_URL`); `configure` asks for it | `wss://benchgen.com/api/public/openclaw/chat` |
 | `httpEndpoint` | Serve `POST /benchgen/chat` on the gateway port | `true` |
 | `sessionScope` | `"conversation"`: one agent session per Benchgen conversation; `"main"`: the agent's main session | `"conversation"` |
 | `agentId` | Agent that answers when the message names none | routed/default agent |
@@ -133,8 +146,8 @@ config keys are present:
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `BENCHGEN_PUBLIC_KEY` | Project public key | — (required) |
-| `BENCHGEN_SECRET_KEY` | Project secret key | — (required) |
+| `BENCHGEN_PUBLIC_KEY` | Project public key | none (required) |
+| `BENCHGEN_SECRET_KEY` | Project secret key | none (required) |
 | `BENCHGEN_BASE_URL` | Ingest endpoint | `https://traces.benchgen.com` |
 | `BENCHGEN_CHAT_URL` | Chat relay WebSocket URL | `wss://benchgen.com/api/public/openclaw/chat` |
 | `BENCHGEN_CHAT_ENABLED` | `false` turns the chat bridge off | `true` |
@@ -174,7 +187,7 @@ Chat turns run under channel `benchgen`. With `sessionScope: "conversation"`
 each Benchgen conversation gets its own agent session,
 `agent:<agentId>:benchgen:direct:<conversationId>`, so parallel chats never
 share context and every turn is traced with that session key and the tag
-`benchgen-chat` — Benchgen matches a chat to its trace by session key.
+`benchgen-chat`; Benchgen matches a chat to its trace by session key.
 
 The keys that authorize trace ingest are also what authorize chat: the plugin
 authenticates to the relay with `Authorization: Basic base64(publicKey:secretKey)`,
@@ -205,7 +218,7 @@ curl -sS http://127.0.0.1:18789/benchgen/chat \
 ```
 
 Add `-H 'Accept: text/event-stream'` (or `"stream": true` in the body) to get
-the reply as it is produced — the SSE events are the frames described below.
+the reply as it is produced; the SSE events are the frames described below.
 `GET /benchgen/chat` (same auth) returns the bridge status, including whether
 the relay is currently connected.
 
@@ -213,7 +226,7 @@ the relay is currently connected.
 
 The plugin opens `chat.url` with headers `Authorization: Basic …`,
 `x-benchgen-plugin: benchgen-openclaw/<version>` and `x-benchgen-protocol: 1`,
-and repeats the keys inside the first frame (`hello.auth`) — relays that cannot
+and repeats the keys inside the first frame (`hello.auth`); relays that cannot
 read upgrade headers authenticate from there; a relay ignores every other frame
 until a valid `hello` has arrived. All frames are JSON text; every
 plugin→Benchgen frame carries `ts` (epoch ms).
@@ -228,14 +241,14 @@ plugin→Benchgen frame carries `ts` (epoch ms).
 | `tool.start` | `conversationId`, `messageId`, `name`, `args?` | The agent started a tool call. |
 | `reply` | `conversationId`, `messageId`, `text`, `kind` (`block` \| `final` \| `tool`), `mediaUrls?` | A delivered reply message. A turn may deliver several. |
 | `turn.done` | `conversationId`, `messageId`, `status` (`ok` \| `error` \| `dropped`), `error?`, `reason?`, `sessionKey`, `agentId`, `replies{tool,block,final}` | Always the last frame of a turn. |
-| `pong` | — | Answer to a `ping`. |
+| `pong` | none | Answer to a `ping`. |
 
 **Benchgen → plugin**
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
 | `message` | `conversationId` (recommended), `messageId?`, `text` (required), `sender?{id,name}`, `agentId?`, `timestamp?` | Run one turn. Missing ids are generated and echoed back. |
-| `ping` | — | Liveness; the plugin answers `pong`. The plugin also sends WebSocket ping frames itself. |
+| `ping` | none | Liveness; the plugin answers `pong`. The plugin also sends WebSocket ping frames itself. |
 | `hello.ack` | `protocol`, `agentId` (BenchGen agent id), `chat{connected,disabled}` | Informational answer to `hello`. |
 | `chat.status` | `connected`, `skipped?`, `error?` | Informational: whether BenchGen (auto-)connected this agent for chat after the hello. |
 
@@ -257,7 +270,7 @@ observations orphaned by dropped events. On shutdown, in-flight traces are
 flushed before the provider is torn down.
 
 Chat uses the host's public plugin runtime (`api.runtime.channel.inbound.dispatch`
-and friends — the same entry point OpenClaw's bundled channels use), so no
+and friends, the same entry point OpenClaw's bundled channels use), so no
 OpenClaw core changes are needed and the turn is indistinguishable from one
 that arrived over Telegram or WebChat. On hosts whose SDK lacks that surface
 the plugin logs which piece is missing and keeps streaming traces.
@@ -267,7 +280,7 @@ the plugin logs which piece is missing and keeps streaming traces.
 No OpenClaw core changes are included in this repository and relies on native
 hooks within the OpenClaw ecosystem.
 
-Chat: `benchgen` is not a registered OpenClaw channel plugin — it dispatches
+Chat: `benchgen` is not a registered OpenClaw channel plugin: it dispatches
 turns through the runtime but has no outbound adapter. So the agent answers
 Benchgen inside a turn, but cannot message Benchgen on its own (heartbeats,
 cron, the `message` tool), and `openclaw channels status` does not list it.
