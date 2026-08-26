@@ -43,6 +43,7 @@ import { registerBenchgenCli } from "./cli.js";
 import {
   CHAT_HTTP_PATH,
   createChatBridge,
+  contextForSession,
   createChatHttpHandler,
   isAuthorizedChatRequest,
   missingRuntimeCapabilities,
@@ -417,9 +418,12 @@ export default definePluginEntry({
     // that turn, not into the user message: it stays out of the session history
     // and out of the model router's routing text. Typed hook since 2026.7.2;
     // older hosts have no `api.on` and simply run without the block.
+    // Read through the process-global store, NOT through chatState: this hook
+    // runs in the agent runtime's plugin instance, whose chatState has no bridge
+    // (OpenClaw calls register() once per instance in the same process).
     if (typeof api.on === "function") {
       api.on("before_prompt_build", (_event, ctx) => {
-        const context = chatState.bridge?.contextOf?.(ctx?.sessionKey);
+        const context = contextForSession(ctx?.sessionKey);
         return context ? { prependSystemContext: context } : undefined;
       });
     }

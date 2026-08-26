@@ -22,6 +22,14 @@
 </div>
 
 
+## What is new in 0.5.1
+
+- Fix: the context block never reached the prompt. OpenClaw 2026.7.2 registers a
+  plugin once per instance in the same gateway process (gateway + pre-warmed agent
+  runtime), and `before_prompt_build` fires in the runtime instance, which has no chat
+  bridge. The per-session blocks now live in a process-global store (`Symbol.for` key)
+  written by the turn runner and read by the hook through `contextForSession`.
+
 ## What is new in 0.5.0
 
 - The platform's per-user context block. Benchgen's relay may send `context` with a

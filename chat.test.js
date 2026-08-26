@@ -26,6 +26,7 @@ import {
   listAgentIds,
   missingRuntimeCapabilities,
   normalizeInboundMessage,
+  contextForSession,
   resolveChatConfig,
 } from "./chat.js";
 import { createTraceEngine } from "./tracer.js";
@@ -335,10 +336,16 @@ test("turn runner: remembers the platform context block per session, latest turn
   // The block is not part of what the agent sees as the user's words.
   assert.equal(runtime.calls.buildContext[0].message.bodyForAgent, "what do I have?");
 
+  // The hook in index.js runs in another plugin instance of the same process
+  // (no bridge there), so the block must be reachable without the runner.
+  assert.equal(contextForSession(key), runner.contextOf(key));
+
   const withoutBlock = normalizeInboundMessage({ text: "and now?", conversationId: "conv-ctx" }).message;
   await runner.runTurn(withoutBlock, sink);
   assert.equal(runner.contextOf(key), null);
+  assert.equal(contextForSession(key), null);
   assert.equal(runner.contextOf("agent:main:benchgen:direct:other"), null);
+  assert.equal(contextForSession(undefined), null);
 });
 
 test("turn runner: sessionScope=main collapses into the agent main session", async () => {

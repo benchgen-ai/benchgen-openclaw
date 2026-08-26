@@ -190,6 +190,26 @@ export function normalizeInboundMessage(raw) {
   };
 }
 
+/**
+ * Where the per-session context blocks live: one Map per gateway PROCESS, not
+ * per plugin instance. OpenClaw 2026.7.2 registers a plugin more than once in
+ * the same process (the gateway itself and the pre-warmed agent runtime each
+ * call `register(api)`), and `before_prompt_build` fires in the agent runtime's
+ * instance, which never sees the chat bridge the gateway's instance started.
+ * A `Symbol.for` key is shared across separate module instances as well, so
+ * the turn runner (gateway instance) and the hook (runtime instance) meet here.
+ */
+const CONTEXT_STORE_KEY = Symbol.for("@benchgen/benchgen-openclaw/session-contexts");
+function contextStore() {
+  return (globalThis[CONTEXT_STORE_KEY] ??= new Map());
+}
+
+/** The platform's context block for a session key's latest turn, or null. */
+export function contextForSession(sessionKey) {
+  if (!sessionKey) return null;
+  return contextStore().get(sessionKey) ?? null;
+}
+
 /** `message.context` from the relay: a non-empty string, capped, else null. */
 function normalizeContext(value) {
   const s = optionalString(value);
@@ -273,9 +293,10 @@ export function createTurnRunner({
   // users would otherwise grow this forever.
   const senders = new Map();
   // sessionKey -> the platform's per-user context block of the latest turn
-  // (phase 4a), read by the `before_prompt_build` hook in index.js. Kept apart
-  // from `senders` so the tracer's sender record stays exactly what it was.
-  const contexts = new Map();
+  // (phase 4a), read by the `before_prompt_build` hook in index.js. Process
+  // global on purpose, see `contextStore`. Kept apart from `senders` so the
+  // tracer's sender record stays exactly what it was.
+  const contexts = contextStore();
   const MAX_SENDERS = 5000;
   function rememberBounded(map, key, value) {
     if (map.size >= MAX_SENDERS) {
