@@ -22,6 +22,17 @@
 </div>
 
 
+## What is new in 0.5.0
+
+- The platform's per-user context block. Benchgen's relay may send `context` with a
+  `message` frame (platform agents only): a short text block with the user's name,
+  credits and their recent datasets, benchmark runs, training jobs and agents. The
+  chat bridge keeps it per session key (`contextOf`) and a `before_prompt_build` hook
+  puts it into the system context of that turn as `prependSystemContext`, so it never
+  lands in the session history or in the user message the model router routes on.
+  Hosts without `api.on` (before 2026.7.2) run without the block. Capped at 8000
+  characters; a turn without the field clears the previous block.
+
 ## What is new in 0.4.0
 
 Chat turns that arrive through the BenchGen relay now carry the person on the

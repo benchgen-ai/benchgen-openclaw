@@ -72,6 +72,10 @@ const RELAY_OUTBOX_MAX = 500;
 // Inbound message text cap. The agent's own context limits apply after this,
 // but a runaway client should not be able to hand the gateway megabytes.
 const MAX_MESSAGE_CHARS = 200_000;
+// The platform's per-user context block (phase 4a) that rides with a turn of a
+// platform agent. Truncated rather than refused: a turn must not fail because
+// the block grew.
+const MAX_CONTEXT_CHARS = 8_000;
 // HTTP request body cap for the gateway endpoint.
 const MAX_HTTP_BODY_BYTES = 1_000_000;
 
@@ -168,6 +172,7 @@ export function normalizeInboundMessage(raw) {
   const sender = raw.sender && typeof raw.sender === "object" ? raw.sender : {};
   const timestamp =
     typeof raw.timestamp === "number" && Number.isFinite(raw.timestamp) ? raw.timestamp : undefined;
+  const context = normalizeContext(raw.context);
   return {
     ok: true,
     message: {
@@ -180,8 +185,16 @@ export function normalizeInboundMessage(raw) {
       },
       agentId: optionalString(raw.agentId),
       timestamp,
+      ...(context ? { context } : {}),
     },
   };
+}
+
+/** `message.context` from the relay: a non-empty string, capped, else null. */
+function normalizeContext(value) {
+  const s = optionalString(value);
+  if (!s) return null;
+  return s.length > MAX_CONTEXT_CHARS ? s.slice(0, MAX_CONTEXT_CHARS) : s;
 }
 
 // ---------------------------------------------------------------------------
@@ -259,19 +272,28 @@ export function createTurnRunner({
   // key is the one thing both sides see. Bounded: a gateway that serves many
   // users would otherwise grow this forever.
   const senders = new Map();
+  // sessionKey -> the platform's per-user context block of the latest turn
+  // (phase 4a), read by the `before_prompt_build` hook in index.js. Kept apart
+  // from `senders` so the tracer's sender record stays exactly what it was.
+  const contexts = new Map();
   const MAX_SENDERS = 5000;
+  function rememberBounded(map, key, value) {
+    if (map.size >= MAX_SENDERS) {
+      const oldest = map.keys().next().value;
+      if (oldest !== undefined) map.delete(oldest);
+    }
+    map.delete(key); // re-insert so the map stays in recency order
+    map.set(key, value);
+  }
   function rememberSender(sessionKey, message) {
     if (!sessionKey) return;
-    if (senders.size >= MAX_SENDERS) {
-      const oldest = senders.keys().next().value;
-      if (oldest !== undefined) senders.delete(oldest);
-    }
-    senders.delete(sessionKey); // re-insert so the map stays in recency order
-    senders.set(sessionKey, {
+    rememberBounded(senders, sessionKey, {
       id: message.sender.id,
       name: message.sender.name,
       conversationId: message.conversationId,
     });
+    // Always written, so a turn without a block clears the previous one.
+    rememberBounded(contexts, sessionKey, message.context ?? null);
   }
 
   const safe = (fn, ...args) => {
@@ -456,6 +478,8 @@ export function createTurnRunner({
     activeConversations: () => queues.size,
     /** Benchgen user behind a session key, if this runner dispatched it. */
     senderOf: (sessionKey) => senders.get(sessionKey) ?? null,
+    /** The platform's user context block for the session's latest turn, or null. */
+    contextOf: (sessionKey) => contexts.get(sessionKey) ?? null,
   };
 }
 
@@ -984,6 +1008,7 @@ export function createChatBridge({
   return {
     runTurn: (message, sink) => runner.runTurn(message, sink),
     senderOf: (sessionKey) => runner.senderOf(sessionKey),
+    contextOf: (sessionKey) => runner.contextOf(sessionKey),
 
     async start() {
       if (!chatConfig.relay) {

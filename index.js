@@ -412,6 +412,18 @@ export default definePluginEntry({
     const chatState = { bridge: null };
     api.registerService(createBenchgenService(api, chatState));
 
+    // Phase 4a: the platform's per-user context block (sent by the Benchgen
+    // relay with each turn of a platform agent) goes into the system context of
+    // that turn, not into the user message: it stays out of the session history
+    // and out of the model router's routing text. Typed hook since 2026.7.2;
+    // older hosts have no `api.on` and simply run without the block.
+    if (typeof api.on === "function") {
+      api.on("before_prompt_build", (_event, ctx) => {
+        const context = chatState.bridge?.contextOf?.(ctx?.sessionKey);
+        return context ? { prependSystemContext: context } : undefined;
+      });
+    }
+
     // Direct chat endpoint on the gateway port: POST /benchgen/chat, authorized
     // with the Benchgen project keys (the gateway's own token is not involved —
     // `auth: "plugin"` hands auth to us). Registered whenever the config asks

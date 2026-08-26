@@ -206,6 +206,15 @@ test("normalizeInboundMessage: fills ids and sender, rejects bad input", () => {
   });
 });
 
+test("normalizeInboundMessage: keeps a platform context block, caps it, drops junk", () => {
+  assert.equal("context" in normalizeInboundMessage({ text: "hi" }).message, false);
+  assert.equal("context" in normalizeInboundMessage({ text: "hi", context: 42 }).message, false);
+  assert.equal("context" in normalizeInboundMessage({ text: "hi", context: "   " }).message, false);
+  assert.equal(normalizeInboundMessage({ text: "hi", context: " block " }).message.context, "block");
+  const long = "x".repeat(9000);
+  assert.equal(normalizeInboundMessage({ text: "hi", context: long }).message.context.length, 8000);
+});
+
 test("isAuthorizedChatRequest: basic pk:sk or bearer sk only", () => {
   const keys = { publicKey: "pk-1", secretKey: "sk-1" };
   const basic = (s) => `Basic ${Buffer.from(s).toString("base64")}`;
@@ -265,6 +274,8 @@ test("turn runner: builds a per-conversation session and pipes the turn to the s
     conversationId: "conv-1",
   });
   assert.equal(runner.senderOf("agent:main:benchgen:direct:other"), null);
+  // No platform context block on this turn: the hook in index.js gets null.
+  assert.equal(runner.contextOf("agent:main:benchgen:direct:conv-1"), null);
 
   const plan = runtime.calls.dispatch[0];
   assert.equal(plan.channel, CHAT_CHANNEL_ID);
@@ -303,6 +314,31 @@ test("turn runner: builds a per-conversation session and pipes the turn to the s
     agentId: "main",
     replies: { tool: 0, block: 0, final: 1 },
   });
+});
+
+test("turn runner: remembers the platform context block per session, latest turn wins", async () => {
+  const runtime = fakeRuntime();
+  const runner = createTurnRunner({
+    runtime,
+    getConfig: () => runtime.config.current(),
+    logger: quietLogger,
+  });
+  const { sink } = collectSink();
+  const key = "agent:main:benchgen:direct:conv-ctx";
+  const withBlock = normalizeInboundMessage({
+    text: "what do I have?",
+    conversationId: "conv-ctx",
+    context: "BenchGen user context\nuser: Ann (username ann)\ndatasets: none",
+  }).message;
+  await runner.runTurn(withBlock, sink);
+  assert.equal(runner.contextOf(key), "BenchGen user context\nuser: Ann (username ann)\ndatasets: none");
+  // The block is not part of what the agent sees as the user's words.
+  assert.equal(runtime.calls.buildContext[0].message.bodyForAgent, "what do I have?");
+
+  const withoutBlock = normalizeInboundMessage({ text: "and now?", conversationId: "conv-ctx" }).message;
+  await runner.runTurn(withoutBlock, sink);
+  assert.equal(runner.contextOf(key), null);
+  assert.equal(runner.contextOf("agent:main:benchgen:direct:other"), null);
 });
 
 test("turn runner: sessionScope=main collapses into the agent main session", async () => {
