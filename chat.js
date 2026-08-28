@@ -173,6 +173,7 @@ export function normalizeInboundMessage(raw) {
   const timestamp =
     typeof raw.timestamp === "number" && Number.isFinite(raw.timestamp) ? raw.timestamp : undefined;
   const context = normalizeContext(raw.context);
+  const auth = normalizeAuth(raw.auth);
   return {
     ok: true,
     message: {
@@ -186,8 +187,74 @@ export function normalizeInboundMessage(raw) {
       agentId: optionalString(raw.agentId),
       timestamp,
       ...(context ? { context } : {}),
+      ...(auth ? { auth } : {}),
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Per-user platform API credential (phase 4b)
+// ---------------------------------------------------------------------------
+
+/**
+ * `message.auth` from the relay: `{ token, apiBase }`, the platform API token
+ * of the user behind the turn and the API root it is good for (platform agents
+ * only, Benchgen decides). Anything malformed is dropped, never partially kept:
+ * a token without a base, or a base that is not an http(s) URL, is no use to a
+ * skill and could only be sent somewhere wrong.
+ */
+const MAX_AUTH_TOKEN_CHARS = 512;
+function normalizeAuth(value) {
+  if (!value || typeof value !== "object") return null;
+  const token = optionalString(value.token);
+  const apiBase = optionalString(value.apiBase);
+  if (!token || token.length > MAX_AUTH_TOKEN_CHARS) return null;
+  if (!apiBase || !/^https?:\/\/[^\s/]+/i.test(apiBase)) return null;
+  return { token, apiBase: apiBase.replace(/\/+$/, "") };
+}
+
+/** Same process-global arrangement as `contextStore`, see below. */
+const AUTH_STORE_KEY = Symbol.for("@benchgen/benchgen-openclaw/session-auth");
+function authStore() {
+  return (globalThis[AUTH_STORE_KEY] ??= new Map());
+}
+
+/** The platform credential for a session key's latest turn, or null. */
+export function authForSession(sessionKey) {
+  if (!sessionKey) return null;
+  return authStore().get(sessionKey) ?? null;
+}
+
+/** Environment variable names a skill reads the credential from. */
+export const AUTH_ENV_URL = "BENCHGEN_API_URL";
+export const AUTH_ENV_TOKEN = "BENCHGEN_API_TOKEN";
+
+/**
+ * The environment a shell tool call of this session gets, or null when the
+ * turn carried no credential. This is how the token reaches skills: as
+ * variables of the `exec` process, not as prompt text, so it is in no session
+ * transcript, no trace and no model request.
+ */
+export function execEnvForSession(sessionKey) {
+  const auth = authForSession(sessionKey);
+  if (!auth) return null;
+  return { [AUTH_ENV_URL]: auth.apiBase, [AUTH_ENV_TOKEN]: auth.token };
+}
+
+/** The tool names OpenClaw runs shell commands under (`bash` is the old alias). */
+export function isExecTool(toolName) {
+  return toolName === "exec" || toolName === "bash";
+}
+
+/**
+ * Tool params with the credential variables merged into `env`. Ours win over
+ * what the model asked for: a prompt-injected `BENCHGEN_API_TOKEN=...` must not
+ * redirect a skill to another account or another host.
+ */
+export function execParamsWithAuth(params, env) {
+  const base = params && typeof params === "object" ? params : {};
+  const existing = base.env && typeof base.env === "object" ? base.env : {};
+  return { ...base, env: { ...existing, ...env } };
 }
 
 /**
@@ -297,6 +364,9 @@ export function createTurnRunner({
   // global on purpose, see `contextStore`. Kept apart from `senders` so the
   // tracer's sender record stays exactly what it was.
   const contexts = contextStore();
+  // sessionKey -> the user's platform API credential of the latest turn
+  // (phase 4b), read by the `before_tool_call` hook in index.js.
+  const auths = authStore();
   const MAX_SENDERS = 5000;
   function rememberBounded(map, key, value) {
     if (map.size >= MAX_SENDERS) {
@@ -315,6 +385,7 @@ export function createTurnRunner({
     });
     // Always written, so a turn without a block clears the previous one.
     rememberBounded(contexts, sessionKey, message.context ?? null);
+    rememberBounded(auths, sessionKey, message.auth ?? null);
   }
 
   const safe = (fn, ...args) => {
@@ -501,6 +572,8 @@ export function createTurnRunner({
     senderOf: (sessionKey) => senders.get(sessionKey) ?? null,
     /** The platform's user context block for the session's latest turn, or null. */
     contextOf: (sessionKey) => contexts.get(sessionKey) ?? null,
+    /** The user's platform API credential for the session's latest turn, or null. */
+    authOf: (sessionKey) => auths.get(sessionKey) ?? null,
   };
 }
 
@@ -1030,6 +1103,7 @@ export function createChatBridge({
     runTurn: (message, sink) => runner.runTurn(message, sink),
     senderOf: (sessionKey) => runner.senderOf(sessionKey),
     contextOf: (sessionKey) => runner.contextOf(sessionKey),
+    authOf: (sessionKey) => runner.authOf(sessionKey),
 
     async start() {
       if (!chatConfig.relay) {

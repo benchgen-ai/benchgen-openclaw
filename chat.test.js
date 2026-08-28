@@ -27,6 +27,10 @@ import {
   missingRuntimeCapabilities,
   normalizeInboundMessage,
   contextForSession,
+  authForSession,
+  execEnvForSession,
+  execParamsWithAuth,
+  isExecTool,
   resolveChatConfig,
 } from "./chat.js";
 import { createTraceEngine } from "./tracer.js";
@@ -873,4 +877,69 @@ test("setTraceUser: puts the Benchgen user on the trace, agent id stays the fall
   const attrs2 = {};
   setTraceUser({ otelSpan: { setAttribute: (k, v) => { attrs2[k] = v; } } }, null);
   assert.deepEqual(attrs2, {});
+});
+
+test("normalizeInboundMessage: keeps a well-formed platform credential, drops anything else", () => {
+  const good = normalizeInboundMessage({
+    text: "hi",
+    auth: { token: " abc123 ", apiBase: "https://uat-platform.benchgen.com/api/" },
+  }).message;
+  assert.deepEqual(good.auth, { token: "abc123", apiBase: "https://uat-platform.benchgen.com/api" });
+  for (const auth of [
+    undefined,
+    null,
+    "abc",
+    { token: "abc" },
+    { apiBase: "https://x.test/api" },
+    { token: "abc", apiBase: "ftp://x.test" },
+    { token: "abc", apiBase: "x.test/api" },
+    { token: "a".repeat(600), apiBase: "https://x.test/api" },
+  ]) {
+    assert.equal("auth" in normalizeInboundMessage({ text: "hi", auth }).message, false, JSON.stringify(auth));
+  }
+});
+
+test("turn runner: remembers the platform credential per session and exposes it as exec env", async () => {
+  const runtime = fakeRuntime();
+  const runner = createTurnRunner({
+    runtime,
+    getConfig: () => runtime.config.current(),
+    logger: quietLogger,
+  });
+  const { sink } = collectSink();
+  const key = "agent:main:benchgen:direct:conv-auth";
+  const withAuth = normalizeInboundMessage({
+    text: "list my runs",
+    conversationId: "conv-auth",
+    auth: { token: "tok-1", apiBase: "https://platform.test/api" },
+  }).message;
+  await runner.runTurn(withAuth, sink);
+  assert.deepEqual(runner.authOf(key), { token: "tok-1", apiBase: "https://platform.test/api" });
+  assert.deepEqual(authForSession(key), runner.authOf(key));
+  assert.deepEqual(execEnvForSession(key), {
+    BENCHGEN_API_URL: "https://platform.test/api",
+    BENCHGEN_API_TOKEN: "tok-1",
+  });
+  // The credential is not part of what the agent sees or of the message body.
+  assert.equal(runtime.calls.buildContext[0].message.bodyForAgent, "list my runs");
+  assert.equal(JSON.stringify(runtime.calls.buildContext[0]).includes("tok-1"), false);
+
+  const withoutAuth = normalizeInboundMessage({ text: "and now?", conversationId: "conv-auth" }).message;
+  await runner.runTurn(withoutAuth, sink);
+  assert.equal(runner.authOf(key), null);
+  assert.equal(execEnvForSession(key), null);
+  assert.equal(execEnvForSession("agent:main:benchgen:direct:never"), null);
+});
+
+test("execParamsWithAuth: merges into env, the credential wins over model-supplied values", () => {
+  const env = { BENCHGEN_API_URL: "https://platform.test/api", BENCHGEN_API_TOKEN: "tok-1" };
+  assert.deepEqual(execParamsWithAuth({ command: "curl x" }, env), { command: "curl x", env });
+  assert.deepEqual(
+    execParamsWithAuth({ command: "curl x", env: { FOO: "1", BENCHGEN_API_TOKEN: "stolen" } }, env),
+    { command: "curl x", env: { FOO: "1", ...env } },
+  );
+  assert.deepEqual(execParamsWithAuth(undefined, env), { env });
+  assert.equal(isExecTool("exec"), true);
+  assert.equal(isExecTool("bash"), true);
+  assert.equal(isExecTool("read"), false);
 });

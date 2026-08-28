@@ -44,6 +44,9 @@ import {
   CHAT_HTTP_PATH,
   createChatBridge,
   contextForSession,
+  execEnvForSession,
+  execParamsWithAuth,
+  isExecTool,
   createChatHttpHandler,
   isAuthorizedChatRequest,
   missingRuntimeCapabilities,
@@ -425,6 +428,16 @@ export default definePluginEntry({
       api.on("before_prompt_build", (_event, ctx) => {
         const context = contextForSession(ctx?.sessionKey);
         return context ? { prependSystemContext: context } : undefined;
+      });
+      // Phase 4b: the user's platform API credential (relay `auth`, platform
+      // agents only) reaches the agent's skills as environment variables of
+      // its shell tool calls (BENCHGEN_API_URL / BENCHGEN_API_TOKEN), and only
+      // there: it is never prompt text, so no transcript, trace or model
+      // request carries it. Same process-global store as the context block.
+      api.on("before_tool_call", (event, ctx) => {
+        if (!isExecTool(event?.toolName)) return undefined;
+        const env = execEnvForSession(ctx?.sessionKey);
+        return env ? { params: execParamsWithAuth(event?.params, env) } : undefined;
       });
     }
 

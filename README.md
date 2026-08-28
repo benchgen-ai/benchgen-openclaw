@@ -22,7 +22,19 @@
 </div>
 
 
-## What is new in 0.5.1
+## What is new in 0.5.2
+
+- The user's platform API credential for the agent's skills. Benchgen's relay may send
+  `auth: { token, apiBase }` with a `message` frame (platform agents only): the token of
+  the user behind the turn and the API root it is good for. The chat bridge keeps it per
+  session key (`authOf`) and a `before_tool_call` hook adds it to every `exec`/`bash` tool
+  call of that session as environment variables, `BENCHGEN_API_URL` and
+  `BENCHGEN_API_TOKEN`, so a skill does `curl -H "Authorization: Token $BENCHGEN_API_TOKEN"
+  "$BENCHGEN_API_URL/submissions/?mine=true"`. It is never prompt text: no session
+  transcript, trace or model request carries it, and a value the model itself puts into
+  `env` is overridden. A turn without the field clears the previous credential; hosts
+  without `api.on` run without it. Needs the same `hooks.allowConversationAccess` entry as
+  the context block (0.5.0 below).
 
 - Fix: the context block never reached the prompt. OpenClaw 2026.7.2 registers a
   plugin once per instance in the same gateway process (gateway + pre-warmed agent
@@ -40,6 +52,22 @@
   lands in the session history or in the user message the model router routes on.
   Hosts without `api.on` (before 2026.7.2) run without the block. Capped at 8000
   characters; a turn without the field clears the previous block.
+  Operators: OpenClaw builds that gate typed hooks (the npm `2026.7.2-beta.*` and
+  `2026.8.*` lines) block `before_prompt_build` for a non-bundled plugin and log
+  `typed hook "before_prompt_build" blocked` unless the plugin entry allows it:
+
+  ```json
+  "plugins": { "entries": { "benchgen": {
+    "hooks": { "allowConversationAccess": true, "allowPromptInjection": true }
+  } } }
+  ```
+
+- Token usage on generations comes from OpenClaw's `model.usage` event, which the host
+  emits only when the provider returned usage. For a model declared by hand under an
+  OpenAI-compatible provider (LiteLLM, a router) set
+  `compat.supportsUsageInStreaming: true` on the entry, otherwise OpenClaw sends no
+  `stream_options.include_usage`, the stream carries no usage, and the trace shows a
+  generation with `usageReported: false` and zero tokens.
 
 ## What is new in 0.4.0
 
