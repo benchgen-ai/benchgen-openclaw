@@ -28,6 +28,7 @@
 // shape changes incompatibly.
 
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { beginTurnUsage, takeTurnUsage, USAGE_SETTLE_MS } from "./usage.js";
 
 export const CHAT_PROTOCOL_VERSION = 1;
 
@@ -351,6 +352,9 @@ export function createTurnRunner({
   sessionScope = "conversation",
   defaultAgentId,
   now = () => Date.now(),
+  // Delay between turn.done and the turn.usage report, so the turn's last
+  // model.usage event (which lands around turn end) is counted.
+  usageSettleMs = USAGE_SETTLE_MS,
 }) {
   const queues = new Map(); // conversationId -> tail promise
   // sessionKey -> { id, name, conversationId } of the Benchgen user behind the
@@ -486,6 +490,9 @@ export function createTurnRunner({
 
     rememberSender(sessionKey, message);
     safe(sink.started, { sessionKey, agentId });
+    beginTurnUsage(sessionKey);
+    const turnStartedMs = now();
+    let toolCalls = 0;
 
     const replies = { tool: 0, block: 0, final: 0 };
     const result = await channel.inbound.dispatch({
@@ -521,6 +528,7 @@ export function createTurnRunner({
           if (payload?.phase && payload.phase !== "start") return;
           const name = typeof payload?.name === "string" ? payload.name.trim() : "";
           if (!name) return;
+          toolCalls += 1;
           safe(sink.tool, { name, args: payload?.args });
         },
       },
@@ -533,14 +541,42 @@ export function createTurnRunner({
     });
 
     const dispatched = result?.dispatched !== false;
+    const status = dispatched ? "ok" : "dropped";
     safe(sink.done, {
-      status: dispatched ? "ok" : "dropped",
+      status,
       reason: dispatched ? undefined : result?.admission?.reason,
       sessionKey,
       agentId,
       replies,
     });
+    reportUsageLater(sink, { sessionKey, agentId, status, startedMs: turnStartedMs, toolCalls });
     return { sessionKey, agentId, replies, dispatched };
+  }
+
+  /**
+   * The turn's token total goes out as its own frame a moment after
+   * turn.done: the last model.usage event of a turn lands around turn end, so
+   * reporting inline would miss it. The relay stores the frame by messageId
+   * (the frame sink adds it), keyed to the sender we remembered for the
+   * session. Sinks without `usage` (older hosts, tests) get nothing.
+   */
+  function reportUsageLater(sink, { sessionKey, agentId, status, startedMs, toolCalls }) {
+    if (typeof sink?.usage !== "function") return;
+    const emitUsage = () => {
+      const usage = takeTurnUsage(sessionKey) ?? { calls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+      const sender = senders.get(sessionKey);
+      safe(sink.usage, {
+        sessionKey,
+        agentId,
+        status,
+        sender: sender ? { id: sender.id, name: sender.name } : undefined,
+        usage,
+        toolCalls,
+        durationMs: Math.max(0, now() - startedMs),
+      });
+    };
+    const timer = setTimeout(emitUsage, usageSettleMs);
+    timer.unref?.();
   }
 
   function runTurn(message, sink) {
@@ -600,6 +636,8 @@ export function createFrameSink(message, emit) {
     reply: (r) => emit(frame("reply", { ...ref, ...r })),
     tool: (t) => emit(frame("tool.start", { ...ref, ...t })),
     done: (d) => emit(frame("turn.done", { ...ref, ...d })),
+    // After turn.done: the turn's token total, for Benchgen's per-user accounting.
+    usage: (u) => emit(frame("turn.usage", { ...ref, ...u })),
   };
 }
 

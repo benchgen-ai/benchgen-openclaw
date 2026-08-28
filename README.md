@@ -22,7 +22,18 @@
 </div>
 
 
-## What is new in 0.5.2
+## What is new in 0.5.3
+
+- Per-turn usage for Benchgen's accounting. LiteLLM knows what the gateway spent but not
+  for whom (one key for every user), so the plugin now sums the `model.usage` events of a
+  turn (`usage.js`, fed by the tracer) and sends a `turn.usage` frame on the relay a moment
+  after `turn.done` (`usageSettleMs`, 1500 ms, so the last usage event of the turn is
+  counted): `{conversationId, messageId, sessionKey, agentId, status, sender, usage:
+  {calls, inputTokens, outputTokens, totalTokens, cacheReadTokens, costUsd, model},
+  toolCalls, durationMs}`. Benchgen stores one row per turn and shows turns and tokens per
+  platform user on Administration > Usage. The HTTP endpoint (SSE) does not get the frame,
+  its response is over by then. Token numbers need the model entry to report usage
+  (`compat.supportsUsageInStreaming: true` for a hand-declared LiteLLM model, see 0.5.0).
 
 - The user's platform API credential for the agent's skills. Benchgen's relay may send
   `auth: { token, apiBase }` with a `message` frame (platform agents only): the token of

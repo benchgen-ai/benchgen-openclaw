@@ -36,6 +36,7 @@
 // the only correlation key we need. Tool start/terminal pairs match on
 // toolCallId. Every handler is best-effort and never throws into the bus.
 
+import { recordModelUsage } from "./usage.js";
 import {
   compact,
   setTraceFields,
@@ -452,6 +453,9 @@ export function createTraceEngine(tracing, opts = {}) {
   // model.usage arrives just after run.completed, by which point the trajectory
   // is written — so this is where we reliably populate IO across the trace.
   function onModelUsage(evt) {
+    // Per-turn accounting for the relay's turn.usage frame (usage.js); the
+    // trace below is unchanged by it.
+    recordModelUsage(evt);
     const root = ensureRoot(evt);
     if (root) root.sawUsage = true; // finalization must not add a second one
     const entry = createChild(evt, root, {

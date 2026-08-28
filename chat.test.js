@@ -943,3 +943,66 @@ test("execParamsWithAuth: merges into env, the credential wins over model-suppli
   assert.equal(isExecTool("bash"), true);
   assert.equal(isExecTool("read"), false);
 });
+
+test("usage store: model.usage events are summed per session between begin and take", async () => {
+  const { beginTurnUsage, recordModelUsage, takeTurnUsage, peekTurnUsage } = await import("./usage.js");
+  const key = "agent:main:benchgen:direct:conv-usage";
+  // Nothing counted before a turn began.
+  recordModelUsage({ sessionKey: key, usage: { input: 99, output: 1, total: 100 } });
+  assert.equal(peekTurnUsage(key), null);
+  beginTurnUsage(key);
+  recordModelUsage({ sessionKey: key, usage: { input: 1000, output: 200, total: 1200, cacheRead: 300 }, model: "benchgen-router-lite", costUsd: 0.001 });
+  recordModelUsage({ sessionKey: key, usage: { input: 10, output: 5 } });
+  recordModelUsage({ sessionKey: "someone-else", usage: { input: 5, output: 5 } });
+  recordModelUsage({ usage: { input: 5, output: 5 } });
+  assert.deepEqual(takeTurnUsage(key), {
+    calls: 2, inputTokens: 1010, outputTokens: 205, totalTokens: 1215, cacheReadTokens: 300, costUsd: 0.001, model: "benchgen-router-lite",
+  });
+  assert.equal(takeTurnUsage(key), null);
+});
+
+test("turn runner: reports the turn's usage after done, keyed to the sender", async () => {
+  const { recordModelUsage } = await import("./usage.js");
+  const runtime = fakeRuntime({
+    onDispatch: async (plan) => {
+      // The model.usage event of this turn arrives while the turn runs.
+      recordModelUsage({ sessionKey: plan.route.sessionKey, usage: { input: 700, output: 120, total: 820 }, model: "benchgen-router-lite" });
+      return defaultDispatch(plan);
+    },
+  });
+  const runner = createTurnRunner({
+    runtime,
+    getConfig: () => runtime.config.current(),
+    logger: quietLogger,
+    usageSettleMs: 5,
+  });
+  const events = [];
+  const sink = {
+    started: () => {}, partial: () => {}, reply: () => {}, tool: () => {},
+    done: (e) => events.push({ type: "done", ...e }),
+    usage: (e) => events.push({ type: "usage", ...e }),
+  };
+  const message = normalizeInboundMessage({
+    text: "hi", conversationId: "conv-usage-2", sender: { id: "ann@example.com", name: "Ann" },
+  }).message;
+  await runner.runTurn(message, sink);
+  await waitFor(() => events.some((e) => e.type === "usage"));
+  const [done, usage] = events;
+  assert.equal(done.type, "done");
+  assert.equal(usage.status, "ok");
+  assert.equal(usage.sessionKey, done.sessionKey);
+  assert.deepEqual(usage.sender, { id: "ann@example.com", name: "Ann" });
+  assert.equal(usage.usage.calls, 1);
+  assert.equal(usage.usage.totalTokens, 820);
+  assert.equal(usage.usage.model, "benchgen-router-lite");
+  assert.equal(usage.toolCalls, 1); // defaultDispatch starts one tool
+  assert.ok(usage.durationMs >= 0);
+
+  // The frame sink names the frame and carries the message reference.
+  const frames = [];
+  const fs = createFrameSink(message, (f) => frames.push(f));
+  fs.usage({ usage: { calls: 1 } });
+  assert.equal(frames[0].type, "turn.usage");
+  assert.equal(frames[0].messageId, message.messageId);
+  assert.equal(frames[0].conversationId, "conv-usage-2");
+});
