@@ -12,6 +12,7 @@
     "cli.js",
     "configure.js",
     "tracer.js",
+    "usage.js",
     "mapping.js",
     "transcript.js",
     "chat.js",
