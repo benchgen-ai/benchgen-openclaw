@@ -739,7 +739,18 @@ export function createRelayClient({
       if (!connected || !ws) return;
       try {
         ws.ping();
-      } catch {
+      } catch (err) {
+        // A synchronous throw means the socket object is already unusable
+        // (destroyed, or half-open after an unclean network drop). Without
+        // this the interval swallowed it forever: the relay looked connected
+        // while dead for days. Declare death and reconnect.
+        const dead = ws;
+        try {
+          dead?.terminate?.();
+        } catch {
+          /* ignore */
+        }
+        handleClose(`ping failed: ${err?.message ?? err}`);
         return;
       }
       if (pongTimer) clearTimeout(pongTimer);
