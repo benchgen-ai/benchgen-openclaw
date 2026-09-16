@@ -248,6 +248,20 @@ export function isExecTool(toolName) {
 }
 
 /**
+ * True for session keys of BenchGen chat turns. The key embeds the channel id
+ * (`agent:main:benchgen:direct:<id>`), so this works even right after a
+ * gateway restart, before the per-session stores refill.
+ */
+export function isBenchgenSessionKey(sessionKey) {
+  return typeof sessionKey === "string" && sessionKey.includes(`:${CHAT_CHANNEL_ID}:`);
+}
+
+/** The gateway's interactive question tool (a panel-only UI control). */
+export function isAskUserTool(toolName) {
+  return toolName === "ask_user";
+}
+
+/**
  * Tool params with the credential variables merged into `env`. Ours win over
  * what the model asked for: a prompt-injected `BENCHGEN_API_TOKEN=...` must not
  * redirect a skill to another account or another host.

@@ -31,8 +31,23 @@ import {
   execEnvForSession,
   execParamsWithAuth,
   isExecTool,
+  isAskUserTool,
+  isBenchgenSessionKey,
   resolveChatConfig,
 } from "./chat.js";
+
+test("isBenchgenSessionKey: matches only the benchgen channel's session keys", () => {
+  assert.equal(isBenchgenSessionKey("agent:main:benchgen:direct:abc123"), true);
+  assert.equal(isBenchgenSessionKey("agent:main:telegram:direct:abc123"), false);
+  assert.equal(isBenchgenSessionKey(undefined), false);
+  assert.equal(isBenchgenSessionKey(""), false);
+});
+
+test("isAskUserTool: exact tool name only", () => {
+  assert.equal(isAskUserTool("ask_user"), true);
+  assert.equal(isAskUserTool("exec"), false);
+  assert.equal(isAskUserTool(undefined), false);
+});
 import { createTraceEngine } from "./tracer.js";
 import { CHAT_TRACE_TAG, TRACE_TAGS } from "./mapping.js";
 

@@ -47,6 +47,8 @@ import {
   execEnvForSession,
   execParamsWithAuth,
   isExecTool,
+  isAskUserTool,
+  isBenchgenSessionKey,
   createChatHttpHandler,
   isAuthorizedChatRequest,
   missingRuntimeCapabilities,
@@ -435,6 +437,17 @@ export default definePluginEntry({
       // there: it is never prompt text, so no transcript, trace or model
       // request carries it. Same process-global store as the context block.
       api.on("before_tool_call", (event, ctx) => {
+        // BenchGen chat is text-only: the relay forwards plain text, so the
+        // panel's interactive ask_user control never reaches the user and the
+        // turn hangs on it. Block the call; the reason steers the model to
+        // ask in plain text, which the skills already mandate.
+        if (isAskUserTool(event?.toolName) && isBenchgenSessionKey(ctx?.sessionKey)) {
+          return {
+            block: true,
+            blockReason:
+              "ask_user cannot be shown in BenchGen chat (text-only). Ask the question as a short numbered list in your reply text instead.",
+          };
+        }
         if (!isExecTool(event?.toolName)) return undefined;
         const env = execEnvForSession(ctx?.sessionKey);
         return env ? { params: execParamsWithAuth(event?.params, env) } : undefined;
