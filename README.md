@@ -22,6 +22,15 @@
 </div>
 
 
+## What is new in 0.7.1
+
+Turn heartbeat. Benchgen drops a chat turn after 5 minutes without a frame
+("The agent went quiet mid-turn"), and a healthy turn can be silent for longer:
+one long tool call, or the model writing a large file, emits nothing until it
+completes. The plugin now sends a `turn.progress` frame once a minute between
+`turn.started` and `turn.done`. It carries no text and needs no change on the
+Benchgen side. The relay's hard cap of 15 minutes per turn still applies.
+
 ## What is new in 0.7.0
 
 Private data guard. One gateway can serve the public BenchGen platform chat

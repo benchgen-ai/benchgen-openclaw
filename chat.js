@@ -247,6 +247,12 @@ export function isExecTool(toolName) {
   return toolName === "exec" || toolName === "bash";
 }
 
+// Turn heartbeat (see createFrameSink): one turn.progress frame a minute keeps
+// Benchgen's 5 minute idle timer from firing on a healthy but silent turn.
+export const TURN_PROGRESS_INTERVAL_MS = 60_000;
+// 20 beats = 20 minutes, past the relay's 15 minute hard cap per turn.
+const TURN_PROGRESS_MAX_BEATS = 20;
+
 /**
  * True for session keys of BenchGen chat turns. The key embeds the channel id
  * (`agent:main:benchgen:direct:<id>`), so this works even right after a
@@ -642,14 +648,45 @@ function frame(type, fields) {
  * transports (relay socket, HTTP SSE) speak the same frames, so this is the one
  * place the shapes live.
  */
-export function createFrameSink(message, emit) {
+export function createFrameSink(message, emit, { progressIntervalMs = TURN_PROGRESS_INTERVAL_MS } = {}) {
   const ref = { conversationId: message.conversationId, messageId: message.messageId };
+  // Heartbeat while the turn is alive. Benchgen drops a turn after 5 minutes
+  // without a frame ("The agent went quiet mid-turn"), and a turn can be silent
+  // for longer than that while being perfectly healthy: one long tool call, or
+  // the model writing a large file, emits nothing until it completes. A
+  // turn.progress frame carries no text; the relay forwards it to the waiting
+  // request, which resets its idle timer and otherwise ignores the type. The
+  // relay's hard 15 minute cap per turn still applies.
+  let progressTimer = null;
+  let beats = 0;
+  const stopProgress = () => {
+    if (progressTimer) clearInterval(progressTimer);
+    progressTimer = null;
+  };
+  const startProgress = () => {
+    stopProgress();
+    if (!(progressIntervalMs > 0)) return;
+    const startedAt = Date.now();
+    progressTimer = setInterval(() => {
+      beats += 1;
+      // A turn that never reports done must not beat forever.
+      if (beats > TURN_PROGRESS_MAX_BEATS) return stopProgress();
+      emit(frame("turn.progress", { ...ref, elapsedMs: Date.now() - startedAt }));
+    }, progressIntervalMs);
+    progressTimer.unref?.();
+  };
   return {
-    started: (info) => emit(frame("turn.started", { ...ref, ...info })),
+    started: (info) => {
+      emit(frame("turn.started", { ...ref, ...info }));
+      startProgress();
+    },
     partial: (p) => emit(frame("reply.partial", { ...ref, ...p })),
     reply: (r) => emit(frame("reply", { ...ref, ...r })),
     tool: (t) => emit(frame("tool.start", { ...ref, ...t })),
-    done: (d) => emit(frame("turn.done", { ...ref, ...d })),
+    done: (d) => {
+      stopProgress();
+      emit(frame("turn.done", { ...ref, ...d }));
+    },
     // After turn.done: the turn's token total, for Benchgen's per-user accounting.
     usage: (u) => emit(frame("turn.usage", { ...ref, ...u })),
   };

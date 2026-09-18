@@ -1021,3 +1021,39 @@ test("turn runner: reports the turn's usage after done, keyed to the sender", as
   assert.equal(frames[0].messageId, message.messageId);
   assert.equal(frames[0].conversationId, "conv-usage-2");
 });
+
+
+test("frame sink: a silent turn sends turn.progress heartbeats between started and done", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const frames = [];
+  const sink = createFrameSink({ conversationId: "c1", messageId: "m1" }, (f) => frames.push(f), {
+    progressIntervalMs: 1000,
+  });
+  t.mock.timers.tick(5000);
+  assert.equal(frames.length, 0, "no heartbeat before the turn starts");
+
+  sink.started({ sessionKey: "agent:main:benchgen:direct:c1", agentId: "main" });
+  t.mock.timers.tick(3500);
+  const beats = frames.filter((f) => f.type === "turn.progress");
+  assert.equal(beats.length, 3);
+  assert.equal(beats[0].messageId, "m1");
+  assert.equal(beats[0].conversationId, "c1");
+  assert.ok(beats[2].elapsedMs >= 3000);
+  assert.equal("text" in beats[0], false, "a heartbeat carries no reply text");
+
+  sink.done({ status: "ok" });
+  t.mock.timers.tick(10000);
+  assert.equal(frames.filter((f) => f.type === "turn.progress").length, 3, "heartbeat stops at turn.done");
+  assert.equal(frames.at(-1).type, "turn.done");
+});
+
+test("frame sink: heartbeat can be switched off", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const frames = [];
+  const sink = createFrameSink({ conversationId: "c1", messageId: "m1" }, (f) => frames.push(f), {
+    progressIntervalMs: 0,
+  });
+  sink.started({});
+  t.mock.timers.tick(600000);
+  assert.deepEqual(frames.map((f) => f.type), ["turn.started"]);
+});
