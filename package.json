@@ -1,6 +1,6 @@
 {
   "name": "@benchgen/benchgen-openclaw",
-  "version": "0.5.5",
+  "version": "0.6.0",
   "description": "Stream OpenClaw agent traces to Benchgen and let Benchgen chat with the agent",
   "type": "module",
   "main": "index.js",
@@ -18,7 +18,8 @@
     "chat.js",
     "openclaw.plugin.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "mirror.js"
   ],
   "openclaw": {
     "extensions": [

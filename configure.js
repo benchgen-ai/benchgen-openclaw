@@ -11,6 +11,7 @@
 
 import { DEFAULT_RELAY_URL } from "./chat.js";
 import * as p from "@clack/prompts";
+import { describeMirror, resolveMirrorConfig } from "./mirror.js";
 
 const BENCHGEN_PLUGIN_ID = "benchgen";
 const DEFAULT_BASE_URL = "https://traces.benchgen.com";
@@ -270,6 +271,7 @@ export function showBenchgenStatus(deps) {
     `  Endpoint:    ${baseUrl}`,
     `  Public key:  ${publicKey ? `${publicKey} (${source(cfg.publicKey != null)})` : "(not set)"}`,
     `  Secret key:  ${secretKey ? `*** (${source(cfg.secretKey != null)})` : "(not set)"}`,
+    `  Mirror:      ${describeMirror(resolveMirrorConfig(cfg, { primary: { publicKey, baseUrl } }))}`,
     `  Chat:        ${chatEnabled ? "enabled" : "disabled"}`,
     ...(chatEnabled
       ? [

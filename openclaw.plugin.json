@@ -67,6 +67,33 @@
             "description": "Agent that answers Benchgen messages when the message names none. Defaults to the routed/default agent."
           }
         }
+      },
+      "mirror": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Trace mirror: a second Benchgen project that receives a copy of every trace (for example a dev gateway that must also feed the production project). Chat stays on the primary keys.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Mirror on/off. Defaults to true when both mirror keys are set."
+          },
+          "publicKey": {
+            "type": "string",
+            "description": "Mirror project public key. Falls back to BENCHGEN_MIRROR_PUBLIC_KEY."
+          },
+          "secretKey": {
+            "type": "string",
+            "description": "Mirror project secret key. Falls back to BENCHGEN_MIRROR_SECRET_KEY."
+          },
+          "baseUrl": {
+            "type": "string",
+            "description": "Mirror ingest endpoint. Falls back to BENCHGEN_MIRROR_BASE_URL, then to the primary baseUrl."
+          },
+          "environment": {
+            "type": "string",
+            "description": "Environment label stamped on the mirrored copy only (for example \"dev\"), so mirrored traces can be told apart inside the mirror project. Falls back to BENCHGEN_MIRROR_ENVIRONMENT."
+          }
+        }
       }
     }
   },
@@ -107,6 +134,27 @@
     "chat.sessionScope": {
       "label": "Chat session scope",
       "help": "conversation: one agent session per Benchgen conversation (recommended). main: share the agent's main session."
+    },
+    "mirror.publicKey": {
+      "label": "Mirror Public Key",
+      "placeholder": "pk-...",
+      "help": "Public key of the second project that gets a copy of every trace. Leave empty for no mirror. Falls back to BENCHGEN_MIRROR_PUBLIC_KEY."
+    },
+    "mirror.secretKey": {
+      "label": "Mirror Secret Key",
+      "placeholder": "sk-...",
+      "sensitive": true,
+      "help": "Secret key of the mirror project. Falls back to BENCHGEN_MIRROR_SECRET_KEY."
+    },
+    "mirror.baseUrl": {
+      "label": "Mirror Endpoint",
+      "placeholder": "https://traces.benchgen.com",
+      "help": "Ingest endpoint of the mirror project. Leave empty to reuse the primary endpoint."
+    },
+    "mirror.environment": {
+      "label": "Mirror Environment Label",
+      "placeholder": "dev",
+      "help": "Stamped on the mirrored copy only, so these traces can be filtered inside the mirror project."
     }
   }
 }

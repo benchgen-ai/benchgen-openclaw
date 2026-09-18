@@ -22,6 +22,17 @@
 </div>
 
 
+## What is new in 0.6.0
+
+Trace mirror. A gateway can send a copy of every trace to a second Benchgen
+project, on top of its own: set `mirror.publicKey` and `mirror.secretKey`
+(or `BENCHGEN_MIRROR_PUBLIC_KEY` / `BENCHGEN_MIRROR_SECRET_KEY`). The mirror
+inherits the primary endpoint unless `mirror.baseUrl` says otherwise, and
+`mirror.environment` (for example `dev`) is stamped on the mirrored copy
+only, so those traces stay recognisable inside the mirror project. Chat is
+not mirrored. A mirror that points at the primary project is refused, and
+`openclaw benchgen show` prints the effective mirror.
+
 ## What is new in 0.5.3
 
 - Per-turn usage for Benchgen's accounting. LiteLLM knows what the gateway spent but not
@@ -178,6 +189,11 @@ Then confirm traces in your Benchgen project.
           "chat": {
             "enabled": true,
             "sessionScope": "conversation"
+          },
+          "mirror": {
+            "publicKey": "pk-second-project",
+            "secretKey": "sk-second-project",
+            "environment": "dev"
           }
         }
       }
@@ -185,6 +201,8 @@ Then confirm traces in your Benchgen project.
   }
 }
 ```
+
+`mirror` is optional: leave it out and traces go to the primary project only.
 
 Chat keys (all optional, under `config.chat`):
 
@@ -196,6 +214,16 @@ Chat keys (all optional, under `config.chat`):
 | `httpEndpoint` | Serve `POST /benchgen/chat` on the gateway port | `true` |
 | `sessionScope` | `"conversation"`: one agent session per Benchgen conversation; `"main"`: the agent's main session | `"conversation"` |
 | `agentId` | Agent that answers when the message names none | routed/default agent |
+
+Mirror keys (all optional, under `config.mirror`):
+
+| Key | Description | Default |
+| --- | --- | --- |
+| `enabled` | Mirror on/off | `true` when both keys are set |
+| `publicKey` | Public key of the second project (`BENCHGEN_MIRROR_PUBLIC_KEY`) | none (no mirror) |
+| `secretKey` | Secret key of the second project (`BENCHGEN_MIRROR_SECRET_KEY`) | none (no mirror) |
+| `baseUrl` | Ingest endpoint of the second project (`BENCHGEN_MIRROR_BASE_URL`) | the primary `baseUrl` |
+| `environment` | Label stamped on the mirrored copy only (`BENCHGEN_MIRROR_ENVIRONMENT`) | none |
 
 ### Environment fallbacks
 
@@ -209,6 +237,10 @@ config keys are present:
 | `BENCHGEN_BASE_URL` | Ingest endpoint | `https://traces.benchgen.com` |
 | `BENCHGEN_CHAT_URL` | Chat relay WebSocket URL | `wss://benchgen.com/api/public/openclaw/chat` |
 | `BENCHGEN_CHAT_ENABLED` | `false` turns the chat bridge off | `true` |
+| `BENCHGEN_MIRROR_PUBLIC_KEY` | Mirror project public key | none (no mirror) |
+| `BENCHGEN_MIRROR_SECRET_KEY` | Mirror project secret key | none (no mirror) |
+| `BENCHGEN_MIRROR_BASE_URL` | Mirror ingest endpoint | the primary endpoint |
+| `BENCHGEN_MIRROR_ENVIRONMENT` | Environment label on mirrored traces | none |
 
 
 Config precedence: `plugins.entries.benchgen.config` → environment variable →

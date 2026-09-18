@@ -40,6 +40,7 @@ import { createTraceEngine } from "./tracer.js";
 import { compact, setTraceFields, setTraceTags } from "./mapping.js";
 import { makeContentResolver, makeToolIOResolver } from "./transcript.js";
 import { registerBenchgenCli } from "./cli.js";
+import { describeMirror, resolveMirrorConfig } from "./mirror.js";
 import {
   CHAT_HTTP_PATH,
   createChatBridge,
@@ -236,6 +237,8 @@ function createBenchgenService(api, chatState) {
   let provider = null;
   /** @type {import("@langfuse/otel").LangfuseSpanProcessor | null} */
   let spanProcessor = null;
+  /** @type {import("@langfuse/otel").LangfuseSpanProcessor | null} */
+  let mirrorProcessor = null;
   /** @type {(() => void) | null} */
   let unsubscribe = null;
   /** @type {ReturnType<typeof createTraceEngine> | null} */
@@ -283,7 +286,25 @@ function createBenchgenService(api, chatState) {
       // and we point the tracing helpers at it. This keeps us off the global
       // tracer provider that OpenClaw's diagnostics-otel may own.
       spanProcessor = new LangfuseSpanProcessor({ publicKey, secretKey, baseUrl });
-      provider = new NodeTracerProvider({ spanProcessors: [spanProcessor] });
+      const spanProcessors = [spanProcessor];
+      // Trace mirror (mirror.js): the same spans, a second Benchgen project. It
+      // hangs off the same provider, so every trace, the startup trace included,
+      // reaches both; `environment` is stamped on the mirrored copy only, so a
+      // dev gateway's traces stay recognisable inside the production project.
+      const mirror = resolveMirrorConfig(getPluginConfig(), { primary: { publicKey, baseUrl } });
+      if (mirror.enabled) {
+        mirrorProcessor = new LangfuseSpanProcessor({
+          publicKey: mirror.publicKey,
+          secretKey: mirror.secretKey,
+          baseUrl: mirror.baseUrl,
+          ...(mirror.environment ? { environment: mirror.environment } : {}),
+        });
+        spanProcessors.push(mirrorProcessor);
+        ctx.logger.info(`benchgen: mirroring traces to ${describeMirror(mirror)}`);
+      } else if (mirror.reason !== "not configured") {
+        ctx.logger.warn(`benchgen: trace mirror ${describeMirror(mirror)}`);
+      }
+      provider = new NodeTracerProvider({ spanProcessors });
       setLangfuseTracerProvider(provider);
 
       const tracing = { startObservation };
@@ -393,6 +414,13 @@ function createBenchgenService(api, chatState) {
           // best-effort flush on shutdown
         }
       }
+      if (mirrorProcessor) {
+        try {
+          await mirrorProcessor.forceFlush();
+        } catch {
+          // best-effort flush on shutdown
+        }
+      }
       if (provider) {
         try {
           await provider.shutdown();
@@ -401,6 +429,7 @@ function createBenchgenService(api, chatState) {
         }
       }
       spanProcessor = null;
+      mirrorProcessor = null;
       provider = null;
     },
   };
