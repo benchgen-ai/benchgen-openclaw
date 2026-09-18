@@ -94,6 +94,27 @@
             "description": "Environment label stamped on the mirrored copy only (for example \"dev\"), so mirrored traces can be told apart inside the mirror project. Falls back to BENCHGEN_MIRROR_ENVIRONMENT."
           }
         }
+      },
+      "privateData": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Private data guard: tool calls that reference these paths are refused unless the session is allowed. For a gateway that serves a public chat and a private team channel from one disk. A guard rail against ordinary requests, not a sandbox.",
+        "properties": {
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Path prefixes that only allowed sessions may touch, for example \"/data/repos\". Empty means the guard is off. Falls back to BENCHGEN_PRIVATE_PATHS (comma separated)."
+          },
+          "allowSessions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Session key fragments that may touch the private paths, for example a Telegram group id or \"agent:main:main\". Everything else, BenchGen platform chat included, is refused. Falls back to BENCHGEN_PRIVATE_ALLOW_SESSIONS (comma separated)."
+          }
+        }
       }
     }
   },

@@ -22,6 +22,19 @@
 </div>
 
 
+## What is new in 0.7.0
+
+Private data guard. One gateway can serve the public BenchGen platform chat
+and a private team channel while internal files sit on the same disk. List the
+private locations in `privateData.paths` (or `BENCHGEN_PRIVATE_PATHS`) and the
+sessions that may read them in `privateData.allowSessions` (or
+`BENCHGEN_PRIVATE_ALLOW_SESSIONS`): fragments of the session key, such as a
+Telegram group id or `agent:main:main`. Every other session, platform chat
+included, gets the tool call refused, and the log names the session key. It
+is deny by default and it is a guard rail, not a sandbox: it matches the
+literal path in the tool parameters, so it stops ordinary requests, not a
+determined attacker. Hostile users need a separate gateway.
+
 ## What is new in 0.6.0
 
 Trace mirror. A gateway can send a copy of every trace to a second Benchgen
@@ -225,6 +238,13 @@ Mirror keys (all optional, under `config.mirror`):
 | `baseUrl` | Ingest endpoint of the second project (`BENCHGEN_MIRROR_BASE_URL`) | the primary `baseUrl` |
 | `environment` | Label stamped on the mirrored copy only (`BENCHGEN_MIRROR_ENVIRONMENT`) | none |
 
+Private data keys (all optional, under `config.privateData`):
+
+| Key | Description | Default |
+| --- | --- | --- |
+| `paths` | Path prefixes only allowed sessions may touch (`BENCHGEN_PRIVATE_PATHS`, comma separated) | none (guard off) |
+| `allowSessions` | Session key fragments that may touch them (`BENCHGEN_PRIVATE_ALLOW_SESSIONS`, comma separated) | none (everyone refused) |
+
 ### Environment fallbacks
 
 Set these before starting the gateway; they are used as fallbacks when no
@@ -241,6 +261,8 @@ config keys are present:
 | `BENCHGEN_MIRROR_SECRET_KEY` | Mirror project secret key | none (no mirror) |
 | `BENCHGEN_MIRROR_BASE_URL` | Mirror ingest endpoint | the primary endpoint |
 | `BENCHGEN_MIRROR_ENVIRONMENT` | Environment label on mirrored traces | none |
+| `BENCHGEN_PRIVATE_PATHS` | Comma separated private path prefixes | none (guard off) |
+| `BENCHGEN_PRIVATE_ALLOW_SESSIONS` | Comma separated session key fragments allowed to read them | none |
 
 
 Config precedence: `plugins.entries.benchgen.config` → environment variable →

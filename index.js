@@ -41,6 +41,7 @@ import { compact, setTraceFields, setTraceTags } from "./mapping.js";
 import { makeContentResolver, makeToolIOResolver } from "./transcript.js";
 import { registerBenchgenCli } from "./cli.js";
 import { describeMirror, resolveMirrorConfig } from "./mirror.js";
+import { PRIVATE_BLOCK_REASON, privateAccessHit, resolvePrivateData } from "./private.js";
 import {
   CHAT_HTTP_PATH,
   createChatBridge,
@@ -466,6 +467,20 @@ export default definePluginEntry({
       // there: it is never prompt text, so no transcript, trace or model
       // request carries it. Same process-global store as the context block.
       api.on("before_tool_call", (event, ctx) => {
+        // Private data guard (private.js): a tool call that references a private
+        // path is refused unless the session is on the allow list. Resolved per
+        // call so a config hot reload takes effect. The session key is logged
+        // (never the params), which is also how to learn a channel's key format.
+        const privateHit = privateAccessHit(
+          { sessionKey: ctx?.sessionKey, params: event?.params },
+          resolvePrivateData(api.pluginConfig),
+        );
+        if (privateHit) {
+          api.logger?.warn?.(
+            `benchgen: blocked ${event?.toolName} on private path ${privateHit} for session ${ctx?.sessionKey ?? "(none)"}`,
+          );
+          return { block: true, blockReason: PRIVATE_BLOCK_REASON };
+        }
         // BenchGen chat is text-only: the relay forwards plain text, so the
         // panel's interactive ask_user control never reaches the user and the
         // turn hangs on it. Block the call; the reason steers the model to
