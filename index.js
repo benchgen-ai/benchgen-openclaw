@@ -51,6 +51,7 @@ import {
   isExecTool,
   isAskUserTool,
   isBenchgenSessionKey,
+  notifyToolStart,
   createChatHttpHandler,
   isAuthorizedChatRequest,
   missingRuntimeCapabilities,
@@ -485,7 +486,12 @@ export default definePluginEntry({
         // panel's interactive ask_user control never reaches the user and the
         // turn hangs on it. Block the call; the reason steers the model to
         // ask in plain text, which the skills already mandate.
-        if (isAskUserTool(event?.toolName) && isBenchgenSessionKey(ctx?.sessionKey)) {
+        // Step frame for Benchgen's chat ("Launching the benchmark run"): the
+        // turn running in this session, if any, reports the tool start. Placed
+        // after the private-data guard so a refused call is not announced, and
+        // fed the ORIGINAL params, before the credential is injected below.
+        notifyToolStart(ctx?.sessionKey, event?.toolName, event?.params);
+                if (isAskUserTool(event?.toolName) && isBenchgenSessionKey(ctx?.sessionKey)) {
           return {
             block: true,
             blockReason:

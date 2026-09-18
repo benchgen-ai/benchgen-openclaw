@@ -33,6 +33,7 @@ import {
   isExecTool,
   isAskUserTool,
   isBenchgenSessionKey,
+  notifyToolStart,
   resolveChatConfig,
 } from "./chat.js";
 
@@ -324,7 +325,9 @@ test("turn runner: builds a per-conversation session and pipes the turn to the s
   );
   assert.deepEqual(events[0], { type: "started", sessionKey: "agent:main:benchgen:direct:conv-1", agentId: "main" });
   assert.deepEqual(events[1], { type: "partial", text: "Hel", delta: "Hel", replace: undefined });
-  assert.deepEqual(events[3], { type: "tool", name: "web_search", args: { q: "x" } });
+  // Only a shell tool's command travels with a step frame (it names the step on
+  // the platform side); other tools' arguments stay on the gateway.
+  assert.deepEqual(events[3], { type: "tool", name: "web_search", args: undefined });
   assert.deepEqual(events[4], { type: "reply", text: "echo: hello agent", kind: "final", mediaUrls: undefined });
   assert.deepEqual(events[5], {
     type: "done",
@@ -1056,4 +1059,52 @@ test("frame sink: heartbeat can be switched off", (t) => {
   sink.started({});
   t.mock.timers.tick(600000);
   assert.deepEqual(frames.map((f) => f.type), ["turn.started"]);
+});
+
+
+test("turn runner: tool starts reported by the before_tool_call hook become step frames", async () => {
+  const SESSION = "agent:main:benchgen:direct:conv-steps";
+  const SECRET = "bgn_SECRETTOKEN123";
+  const runtime = fakeRuntime({
+    onDispatch: async (p) => {
+      // What the hook does on a host that never calls onToolStart.
+      assert.equal(notifyToolStart(SESSION, "exec", {
+        command: "node skills/benchmark-launch/run_benchmark.mjs launch --competition 99",
+        env: { BENCHGEN_API_TOKEN: SECRET },
+      }), true);
+      // A host that ALSO reports the same call must not double it.
+      p.replyOptions?.onToolStart?.({ name: "exec", phase: "start", args: { command: "x", env: { T: SECRET } } });
+      // A different tool straight after is a new step.
+      p.replyOptions?.onToolStart?.({ name: "read", phase: "start", args: { path: "/x" } });
+      // Another session's tool call is none of this turn's business.
+      assert.equal(notifyToolStart("agent:main:telegram:group:-100", "exec", { command: "ls" }), false);
+    },
+  });
+  const runner = createTurnRunner({ runtime, getConfig: () => runtime.config.current(), logger: quietLogger });
+  const { events, sink } = collectSink();
+  const message = normalizeInboundMessage({
+    text: "run it", conversationId: "conv-steps", messageId: "m-steps", sender: { id: "u1", name: "Ann" },
+  }).message;
+  await runner.runTurn(message, sink);
+
+  const tools = events.filter((e) => e.type === "tool");
+  assert.deepEqual(tools.map((e) => e.name), ["exec", "read"]);
+  assert.deepEqual(tools[0].args, {
+    command: "node skills/benchmark-launch/run_benchmark.mjs launch --competition 99",
+  });
+  assert.equal(JSON.stringify(events).includes(SECRET), false, "the injected credential never rides a step frame");
+  // After the turn the session no longer reports into it.
+  assert.equal(notifyToolStart(SESSION, "exec", { command: "ls" }), false);
+});
+
+test("turn runner: the tool notifier is removed even when the turn throws", async () => {
+  const SESSION = "agent:main:benchgen:direct:conv-boom";
+  const runtime = fakeRuntime({ onDispatch: async () => { throw new Error("boom"); } });
+  const runner = createTurnRunner({ runtime, getConfig: () => runtime.config.current(), logger: quietLogger });
+  const { sink } = collectSink();
+  const message = normalizeInboundMessage({
+    text: "hi", conversationId: "conv-boom", messageId: "m-boom", sender: { id: "u1", name: "Ann" },
+  }).message;
+  await runner.runTurn(message, sink).catch(() => {});
+  assert.equal(notifyToolStart(SESSION, "exec", { command: "ls" }), false);
 });

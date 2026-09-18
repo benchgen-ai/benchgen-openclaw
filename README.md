@@ -22,6 +22,18 @@
 </div>
 
 
+## What is new in 0.7.2
+
+Step frames on every OpenClaw version. Benchgen shows what the agent is doing
+("Launching the benchmark run") from `tool.start` frames, but they relied on the
+host's `onToolStart` reply option, which OpenClaw 2026.9 does not call, so no
+step ever arrived. Tool starts are now reported from the `before_tool_call`
+hook, which fires on every version; a host that also calls `onToolStart` is
+de-duplicated. A step frame now carries only a shell tool's command, never the
+whole parameter object: the exec tool's parameters get the user's API credential
+injected as environment, and other tools' arguments have no reason to leave the
+gateway.
+
 ## What is new in 0.7.1
 
 Turn heartbeat. Benchgen drops a chat turn after 5 minutes without a frame

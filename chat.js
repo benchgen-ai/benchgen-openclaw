@@ -292,6 +292,39 @@ function contextStore() {
   return (globalThis[CONTEXT_STORE_KEY] ??= new Map());
 }
 
+// Tool starts of a running turn, reported from the `before_tool_call` hook. The
+// host's `onToolStart` reply option is not called on every OpenClaw version
+// (2026.9 runs tools without it), which left Benchgen with no step frames at
+// all; the hook fires on every version, in the agent runtime's plugin instance,
+// so it meets the turn runner through the same kind of process-global store.
+const TOOL_STORE_KEY = Symbol.for("@benchgen/benchgen-openclaw/session-tool-sinks");
+function toolStore() {
+  return (globalThis[TOOL_STORE_KEY] ??= new Map());
+}
+
+// Only what Benchgen needs to name the step. Never the whole params object: the
+// exec tool's params get the user's API credential injected as environment.
+function stepArgs(toolName, params) {
+  const command = params && typeof params === "object" ? (params.command ?? params.cmd) : undefined;
+  if (typeof command === "string") return { command: command.slice(0, 600) };
+  if (Array.isArray(command)) return { command: command.map(String).join(" ").slice(0, 600) };
+  return undefined;
+}
+
+/** Called by the `before_tool_call` hook: tell the turn running in this session that a tool starts. */
+export function notifyToolStart(sessionKey, toolName, params) {
+  const notify = sessionKey ? toolStore().get(sessionKey) : null;
+  if (typeof notify !== "function") return false;
+  const name = typeof toolName === "string" ? toolName.trim() : "";
+  if (!name) return false;
+  try {
+    notify({ name, args: stepArgs(name, params) });
+  } catch {
+    // a step frame is best-effort, never a reason to fail the tool call
+  }
+  return true;
+}
+
 /** The platform's context block for a session key's latest turn, or null. */
 export function contextForSession(sessionKey) {
   if (!sessionKey) return null;
@@ -510,12 +543,22 @@ export function createTurnRunner({
 
     rememberSender(sessionKey, message);
     safe(sink.started, { sessionKey, agentId });
+    // Steps come from the before_tool_call hook (see notifyToolStart). A host that
+    // also calls onToolStart reports the same call a moment later: skip that one.
+    let toolCalls = 0;
+    let lastHookTool = null;
+    toolStore().set(sessionKey, (tool) => {
+      toolCalls += 1;
+      lastHookTool = { name: tool.name, at: Date.now() };
+      safe(sink.tool, tool);
+    });
     beginTurnUsage(sessionKey);
     const turnStartedMs = now();
-    let toolCalls = 0;
 
     const replies = { tool: 0, block: 0, final: 0 };
-    const result = await channel.inbound.dispatch({
+    let result;
+    try {
+      result = await channel.inbound.dispatch({
       cfg,
       channel: CHAT_CHANNEL_ID,
       accountId,
@@ -548,8 +591,12 @@ export function createTurnRunner({
           if (payload?.phase && payload.phase !== "start") return;
           const name = typeof payload?.name === "string" ? payload.name.trim() : "";
           if (!name) return;
+          if (lastHookTool && lastHookTool.name === name && Date.now() - lastHookTool.at < 5000) {
+            lastHookTool = null; // already reported by the hook
+            return;
+          }
           toolCalls += 1;
-          safe(sink.tool, { name, args: payload?.args });
+          safe(sink.tool, { name, args: stepArgs(name, payload?.args) });
         },
       },
       replyPipeline: {},
@@ -558,7 +605,12 @@ export function createTurnRunner({
           throw err instanceof Error ? err : new Error(`benchgen chat session record failed: ${err}`);
         },
       },
-    });
+      });
+    } finally {
+      // The turn is over either way: a later tool call in this session (another
+      // channel, a cron run) must not be reported into a finished turn.
+      toolStore().delete(sessionKey);
+    }
 
     const dispatched = result?.dispatched !== false;
     const status = dispatched ? "ok" : "dropped";
