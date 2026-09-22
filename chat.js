@@ -387,7 +387,7 @@ export function askUserBlockReason(choices) {
   const shown = choices.questions
     .map((q) => `${q.question} [${q.options.map((o) => o.label).join(" | ")}]`)
     .join("; ");
-  return `The user now sees these options as buttons: ${shown}. Do not repeat the options. End your reply with the question in one short sentence and stop; the user's click arrives as their next message.`;
+  return `The user sees these options as buttons: ${shown}. End your reply with the question in one short sentence that names the options inline (for example "Launch or cancel?"), then stop; the user's click or typed answer arrives as their next message.`;
 }
 
 /** The platform's context block for a session key's latest turn, or null. */

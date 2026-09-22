@@ -31,9 +31,9 @@ question, options: [{label, description?}], multiSelect}]}`), and Benchgen's
 chat draws them as buttons under the reply; a click sends the option's label as
 the user's next message. The tool call itself is still blocked (the interactive
 control would hang the turn), and the block reason now tells the model that the
-options are on screen, so it ends its reply with the question and stops. A
-Benchgen without button support ignores the frame; the model's text question
-still arrives. Frames of the `ask_user` call are not step frames.
+options are on screen, so it ends its reply with a one-line question that names
+the options and stops. A Benchgen without button support ignores the frame; the
+model's one-line question still arrives. Frames of the `ask_user` call are not step frames.
 
 ## What is new in 0.7.2
 

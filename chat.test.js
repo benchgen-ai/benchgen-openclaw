@@ -1152,7 +1152,7 @@ test("choicesFromAskUser: keeps what the platform draws, capped like OpenClaw", 
 test("askUserBlockReason: names the options on screen, or falls back to the numbered-list steer", () => {
   const withButtons = askUserBlockReason(choicesFromAskUser(ASK));
   assert.match(withButtons, /buttons: Launch the distillation training now\? \[Launch \| Cancel\]/);
-  assert.match(withButtons, /Do not repeat the options/);
+  assert.match(withButtons, /names the options inline/);
   assert.match(askUserBlockReason(null), /numbered list/);
 });
 
