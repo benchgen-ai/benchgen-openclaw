@@ -325,6 +325,71 @@ export function notifyToolStart(sessionKey, toolName, params) {
   return true;
 }
 
+const MAX_CHOICE_QUESTIONS = 3;
+const MAX_CHOICE_OPTIONS = 4;
+const MAX_CHOICE_LABEL = 64;
+const MAX_CHOICE_QUESTION = 500;
+
+/**
+ * The `ask_user` arguments as a `choices` payload: `{ questions: [{ id, header,
+ * question, options: [{ label, description? }], multiSelect }] }`. Null when the
+ * arguments carry no usable question (the hook then blocks the call as before).
+ * Only the fields Benchgen draws are kept, capped like OpenClaw caps them.
+ */
+export function choicesFromAskUser(params) {
+  const list = params && typeof params === "object" && Array.isArray(params.questions) ? params.questions : [];
+  const questions = [];
+  for (const q of list.slice(0, MAX_CHOICE_QUESTIONS)) {
+    if (!q || typeof q !== "object") continue;
+    const question = optionalString(q.question);
+    const options = (Array.isArray(q.options) ? q.options : [])
+      .map((o) => {
+        const label = o && typeof o === "object" ? optionalString(o.label) : optionalString(o);
+        if (!label) return null;
+        const description = o && typeof o === "object" ? optionalString(o.description) : null;
+        return { label: label.slice(0, MAX_CHOICE_LABEL), ...(description ? { description: description.slice(0, MAX_CHOICE_QUESTION) } : {}) };
+      })
+      .filter(Boolean)
+      .slice(0, MAX_CHOICE_OPTIONS);
+    if (!question || options.length < 2) continue;
+    questions.push({
+      id: optionalString(q.id) ?? `q${questions.length + 1}`,
+      header: (optionalString(q.header) ?? "").slice(0, 12),
+      question: question.slice(0, MAX_CHOICE_QUESTION),
+      options,
+      multiSelect: q.multiSelect === true,
+    });
+  }
+  return questions.length ? { questions } : null;
+}
+
+/**
+ * Hand the turn in `sessionKey` a `choices` frame built from `ask_user`
+ * arguments. Returns the payload when a turn took it, else null.
+ */
+export function notifyChoices(sessionKey, params) {
+  const notify = sessionKey ? toolStore().get(sessionKey) : null;
+  const choices = choicesFromAskUser(params);
+  if (typeof notify !== "function" || !choices) return null;
+  try {
+    notify({ name: "ask_user", choices });
+  } catch {
+    return null;
+  }
+  return choices;
+}
+
+/** The block reason for ask_user once its options are on screen as buttons. */
+export function askUserBlockReason(choices) {
+  if (!choices) {
+    return "ask_user cannot be shown in BenchGen chat (text-only). Ask the question as a short numbered list in your reply text instead.";
+  }
+  const shown = choices.questions
+    .map((q) => `${q.question} [${q.options.map((o) => o.label).join(" | ")}]`)
+    .join("; ");
+  return `The user now sees these options as buttons: ${shown}. Do not repeat the options. End your reply with the question in one short sentence and stop; the user's click arrives as their next message.`;
+}
+
 /** The platform's context block for a session key's latest turn, or null. */
 export function contextForSession(sessionKey) {
   if (!sessionKey) return null;
@@ -548,6 +613,10 @@ export function createTurnRunner({
     let toolCalls = 0;
     let lastHookTool = null;
     toolStore().set(sessionKey, (tool) => {
+      if (tool.choices) {
+        safe(sink.choices, tool.choices);
+        return;
+      }
       toolCalls += 1;
       lastHookTool = { name: tool.name, at: Date.now() };
       safe(sink.tool, tool);
@@ -735,6 +804,8 @@ export function createFrameSink(message, emit, { progressIntervalMs = TURN_PROGR
     partial: (p) => emit(frame("reply.partial", { ...ref, ...p })),
     reply: (r) => emit(frame("reply", { ...ref, ...r })),
     tool: (t) => emit(frame("tool.start", { ...ref, ...t })),
+    // The agent asked a question with options (ask_user): Benchgen draws buttons.
+    choices: (c) => emit(frame("choices", { ...ref, ...c })),
     done: (d) => {
       stopProgress();
       emit(frame("turn.done", { ...ref, ...d }));

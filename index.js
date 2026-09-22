@@ -52,6 +52,8 @@ import {
   isAskUserTool,
   isBenchgenSessionKey,
   notifyToolStart,
+  notifyChoices,
+  askUserBlockReason,
   createChatHttpHandler,
   isAuthorizedChatRequest,
   missingRuntimeCapabilities,
@@ -482,22 +484,20 @@ export default definePluginEntry({
           );
           return { block: true, blockReason: PRIVATE_BLOCK_REASON };
         }
-        // BenchGen chat is text-only: the relay forwards plain text, so the
-        // panel's interactive ask_user control never reaches the user and the
-        // turn hangs on it. Block the call; the reason steers the model to
-        // ask in plain text, which the skills already mandate.
+        // ask_user in BenchGen chat: the interactive control cannot reach the
+        // user through the text relay and would hang the turn. Its options go
+        // out as a `choices` frame (the platform draws buttons), the call is
+        // blocked, and the reason tells the model to just ask the question.
+        // Checked before the step frame so the blocked call is not announced.
+        if (isAskUserTool(event?.toolName) && isBenchgenSessionKey(ctx?.sessionKey)) {
+          const choices = notifyChoices(ctx?.sessionKey, event?.params);
+          return { block: true, blockReason: askUserBlockReason(choices) };
+        }
         // Step frame for Benchgen's chat ("Launching the benchmark run"): the
         // turn running in this session, if any, reports the tool start. Placed
         // after the private-data guard so a refused call is not announced, and
         // fed the ORIGINAL params, before the credential is injected below.
         notifyToolStart(ctx?.sessionKey, event?.toolName, event?.params);
-                if (isAskUserTool(event?.toolName) && isBenchgenSessionKey(ctx?.sessionKey)) {
-          return {
-            block: true,
-            blockReason:
-              "ask_user cannot be shown in BenchGen chat (text-only). Ask the question as a short numbered list in your reply text instead.",
-          };
-        }
         if (!isExecTool(event?.toolName)) return undefined;
         const env = execEnvForSession(ctx?.sessionKey);
         return env ? { params: execParamsWithAuth(event?.params, env) } : undefined;

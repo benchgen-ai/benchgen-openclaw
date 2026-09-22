@@ -34,6 +34,9 @@ import {
   isAskUserTool,
   isBenchgenSessionKey,
   notifyToolStart,
+  notifyChoices,
+  choicesFromAskUser,
+  askUserBlockReason,
   resolveChatConfig,
 } from "./chat.js";
 
@@ -125,6 +128,7 @@ function collectSink() {
     partial: (e) => events.push({ type: "partial", ...e }),
     reply: (e) => events.push({ type: "reply", ...e }),
     tool: (e) => events.push({ type: "tool", ...e }),
+    choices: (e) => events.push({ type: "choices", ...e }),
     done: (e) => events.push({ type: "done", ...e }),
   };
   return { events, sink };
@@ -480,10 +484,11 @@ test("createFrameSink stamps conversation/message ids and a timestamp on every f
   sink.partial({ text: "He" });
   sink.reply({ text: "Hello", kind: "final" });
   sink.tool({ name: "t" });
+  sink.choices({ questions: [] });
   sink.done({ status: "ok" });
   assert.deepEqual(
     out.map((f) => f.type),
-    ["turn.started", "reply.partial", "reply", "tool.start", "turn.done"],
+    ["turn.started", "reply.partial", "reply", "tool.start", "choices", "turn.done"],
   );
   for (const f of out) {
     assert.equal(f.conversationId, "c");
@@ -1107,4 +1112,69 @@ test("turn runner: the tool notifier is removed even when the turn throws", asyn
   }).message;
   await runner.runTurn(message, sink).catch(() => {});
   assert.equal(notifyToolStart(SESSION, "exec", { command: "ls" }), false);
+});
+
+// ---------------------------------------------------------------------------
+// ask_user -> choices (buttons in Benchgen chat)
+// ---------------------------------------------------------------------------
+
+const ASK = {
+  questions: [{
+    id: "launch",
+    header: "Training launch",
+    question: "Launch the distillation training now?",
+    options: [{ label: "Launch", description: "10 epochs on the GPU" }, { label: "Cancel" }],
+  }],
+  timeoutSeconds: 600,
+};
+
+test("choicesFromAskUser: keeps what the platform draws, capped like OpenClaw", () => {
+  const c = choicesFromAskUser(ASK);
+  assert.deepEqual(c, {
+    questions: [{
+      id: "launch",
+      header: "Training lau",
+      question: "Launch the distillation training now?",
+      options: [{ label: "Launch", description: "10 epochs on the GPU" }, { label: "Cancel" }],
+      multiSelect: false,
+    }],
+  });
+  // Bare-string options are tolerated, a lone option is not a choice, junk is dropped.
+  assert.deepEqual(
+    choicesFromAskUser({ questions: [{ question: "Which?", options: ["A", "B", "C", "D", "E"] }] }).questions[0].options.map((o) => o.label),
+    ["A", "B", "C", "D"],
+  );
+  assert.equal(choicesFromAskUser({ questions: [{ question: "Which?", options: ["only"] }] }), null);
+  assert.equal(choicesFromAskUser({ questions: "nope" }), null);
+  assert.equal(choicesFromAskUser(undefined), null);
+});
+
+test("askUserBlockReason: names the options on screen, or falls back to the numbered-list steer", () => {
+  const withButtons = askUserBlockReason(choicesFromAskUser(ASK));
+  assert.match(withButtons, /buttons: Launch the distillation training now\? \[Launch \| Cancel\]/);
+  assert.match(withButtons, /Do not repeat the options/);
+  assert.match(askUserBlockReason(null), /numbered list/);
+});
+
+test("turn runner: ask_user from the hook becomes a choices frame, not a step", async () => {
+  const SESSION = "agent:main:benchgen:direct:conv-ask";
+  const runtime = fakeRuntime({
+    onDispatch: async () => {
+      const choices = notifyChoices(SESSION, ASK);
+      assert.equal(choices.questions[0].options.length, 2);
+      assert.equal(notifyChoices(SESSION, { questions: [] }), null, "nothing to draw, nothing sent");
+      assert.equal(notifyChoices("agent:main:telegram:group:-100", ASK), null);
+    },
+  });
+  const runner = createTurnRunner({ runtime, getConfig: () => runtime.config.current(), logger: quietLogger });
+  const { events, sink } = collectSink();
+  const message = normalizeInboundMessage({
+    text: "train it", conversationId: "conv-ask", messageId: "m-ask", sender: { id: "u1", name: "Ann" },
+  }).message;
+  await runner.runTurn(message, sink);
+  assert.deepEqual(events.filter((e) => e.type === "tool"), [], "a question is not a step");
+  const choices = events.filter((e) => e.type === "choices");
+  assert.equal(choices.length, 1);
+  assert.equal(choices[0].questions[0].options[0].label, "Launch");
+  assert.equal(notifyChoices(SESSION, ASK), null, "after the turn the session no longer reports");
 });

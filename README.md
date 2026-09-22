@@ -22,6 +22,19 @@
 </div>
 
 
+## What is new in 0.8.0
+
+Questions with options become buttons. When the agent calls OpenClaw's
+`ask_user` tool in a Benchgen chat session, the plugin sends the question and
+its options to Benchgen as a `choices` frame (`{questions: [{id, header,
+question, options: [{label, description?}], multiSelect}]}`), and Benchgen's
+chat draws them as buttons under the reply; a click sends the option's label as
+the user's next message. The tool call itself is still blocked (the interactive
+control would hang the turn), and the block reason now tells the model that the
+options are on screen, so it ends its reply with the question and stops. A
+Benchgen without button support ignores the frame; the model's text question
+still arrives. Frames of the `ask_user` call are not step frames.
+
 ## What is new in 0.7.2
 
 Step frames on every OpenClaw version. Benchgen shows what the agent is doing
@@ -372,6 +385,7 @@ plugin→Benchgen frame carries `ts` (epoch ms).
 | `turn.started` | `conversationId`, `messageId`, `sessionKey`, `agentId` | The message was accepted and the agent is running. |
 | `reply.partial` | `conversationId`, `messageId`, `text`, `delta?`, `replace?` | Streaming: `text` is the reply-in-progress so far. |
 | `tool.start` | `conversationId`, `messageId`, `name`, `args?` | The agent started a tool call. |
+| `choices` | `conversationId`, `messageId`, `questions[{id, header, question, options[{label, description?}], multiSelect}]` | The agent asked a question with options (`ask_user`); draw them as buttons and send the picked label as the next user message. |
 | `reply` | `conversationId`, `messageId`, `text`, `kind` (`block` \| `final` \| `tool`), `mediaUrls?` | A delivered reply message. A turn may deliver several. |
 | `turn.done` | `conversationId`, `messageId`, `status` (`ok` \| `error` \| `dropped`), `error?`, `reason?`, `sessionKey`, `agentId`, `replies{tool,block,final}` | Always the last frame of a turn. |
 | `pong` | none | Answer to a `ping`. |
