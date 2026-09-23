@@ -939,9 +939,12 @@ test("turn runner: remembers the platform credential per session and exposes it 
   await runner.runTurn(withAuth, sink);
   assert.deepEqual(runner.authOf(key), { token: "tok-1", apiBase: "https://platform.test/api" });
   assert.deepEqual(authForSession(key), runner.authOf(key));
+  // The credential and, for skills that scope by user, who it belongs to.
   assert.deepEqual(execEnvForSession(key), {
     BENCHGEN_API_URL: "https://platform.test/api",
     BENCHGEN_API_TOKEN: "tok-1",
+    BENCHGEN_USER_ID: withAuth.sender.id,
+    BENCHGEN_USER_NAME: withAuth.sender.name,
   });
   // The credential is not part of what the agent sees or of the message body.
   assert.equal(runtime.calls.buildContext[0].message.bodyForAgent, "list my runs");

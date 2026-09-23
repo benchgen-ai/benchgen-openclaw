@@ -226,9 +226,29 @@ export function authForSession(sessionKey) {
   return authStore().get(sessionKey) ?? null;
 }
 
+/** Same arrangement for who is asking: sessionKey -> { id, name } of the latest turn's sender. */
+const IDENTITY_STORE_KEY = Symbol.for("@benchgen/benchgen-openclaw/session-identity");
+function identityStore() {
+  return (globalThis[IDENTITY_STORE_KEY] ??= new Map());
+}
+
+/** The platform user behind a session key's latest turn, or null. */
+export function identityForSession(sessionKey) {
+  if (!sessionKey) return null;
+  return identityStore().get(sessionKey) ?? null;
+}
+
 /** Environment variable names a skill reads the credential from. */
 export const AUTH_ENV_URL = "BENCHGEN_API_URL";
 export const AUTH_ENV_TOKEN = "BENCHGEN_API_TOKEN";
+/**
+ * ...and who the credential belongs to. A skill that reads data of several
+ * users (harness-improve over the agent's traces) scopes itself by these; they
+ * come from the relay's headers, never from the model, so they cannot be
+ * talked into naming someone else.
+ */
+export const IDENTITY_ENV_ID = "BENCHGEN_USER_ID";
+export const IDENTITY_ENV_NAME = "BENCHGEN_USER_NAME";
 
 /**
  * The environment a shell tool call of this session gets, or null when the
@@ -239,7 +259,13 @@ export const AUTH_ENV_TOKEN = "BENCHGEN_API_TOKEN";
 export function execEnvForSession(sessionKey) {
   const auth = authForSession(sessionKey);
   if (!auth) return null;
-  return { [AUTH_ENV_URL]: auth.apiBase, [AUTH_ENV_TOKEN]: auth.token };
+  const env = { [AUTH_ENV_URL]: auth.apiBase, [AUTH_ENV_TOKEN]: auth.token };
+  const who = identityForSession(sessionKey);
+  if (who?.id) {
+    env[IDENTITY_ENV_ID] = who.id;
+    if (who.name) env[IDENTITY_ENV_NAME] = who.name;
+  }
+  return env;
 }
 
 /** The tool names OpenClaw runs shell commands under (`bash` is the old alias). */
@@ -489,6 +515,8 @@ export function createTurnRunner({
   // sessionKey -> the user's platform API credential of the latest turn
   // (phase 4b), read by the `before_tool_call` hook in index.js.
   const auths = authStore();
+  // sessionKey -> who the latest turn came from, for the exec environment.
+  const identities = identityStore();
   const MAX_SENDERS = 5000;
   function rememberBounded(map, key, value) {
     if (map.size >= MAX_SENDERS) {
@@ -508,6 +536,7 @@ export function createTurnRunner({
     // Always written, so a turn without a block clears the previous one.
     rememberBounded(contexts, sessionKey, message.context ?? null);
     rememberBounded(auths, sessionKey, message.auth ?? null);
+    rememberBounded(identities, sessionKey, { id: message.sender.id, name: message.sender.name });
   }
 
   const safe = (fn, ...args) => {

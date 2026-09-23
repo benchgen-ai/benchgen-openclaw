@@ -22,6 +22,15 @@
 </div>
 
 
+## What is new in 0.8.1
+
+The shell environment of a Benchgen chat turn now also carries who is asking:
+`BENCHGEN_USER_ID` (the platform account, as the relay's headers name it) and
+`BENCHGEN_USER_NAME`, next to `BENCHGEN_API_URL` and `BENCHGEN_API_TOKEN`. A
+skill that reads data of several users (harness-improve over the agent's own
+traces) scopes itself by them; they never pass through the model, so a prompt
+cannot rename the caller.
+
 ## What is new in 0.8.0
 
 Questions with options become buttons. When the agent calls OpenClaw's
