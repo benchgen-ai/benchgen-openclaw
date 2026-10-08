@@ -668,6 +668,70 @@ test("bridge: hello on connect, message → turn frames, ping → pong, bad mess
   assert.equal(bridge.status().relay.connected, false);
 });
 
+test("bridge: Benchgen's abort frame stops the turn in flight and it ends as aborted", async () => {
+  const { wss, url } = await startWsServer();
+  const frames = [];
+  let serverSocket;
+  wss.on("connection", (socket) => {
+    serverSocket = socket;
+    socket.on("message", (d) => frames.push(JSON.parse(d.toString())));
+  });
+  // A host whose turn runs until its abort signal fires, like a long model call.
+  let seenSignal = null;
+  const runtime = fakeRuntime({
+    onDispatch: async (plan) => {
+      seenSignal = plan.replyOptions.abortSignal;
+      await plan.replyOptions.onPartialReply({ text: "Let me ", delta: "Let me " });
+      await new Promise((resolve, reject) => {
+        seenSignal.addEventListener("abort", () => reject(new Error("aborted by signal")), { once: true });
+      });
+    },
+  });
+  const bridge = createChatBridge({
+    runtime,
+    getConfig: () => runtime.config.current(),
+    chatConfig: { enabled: true, relay: true, url, sessionScope: "conversation" },
+    publicKey: "pk-1",
+    secretKey: "sk-1",
+    pluginVersion: "0.8.2-test",
+    logger: quietLogger,
+    WebSocketImpl: WebSocket,
+  });
+  try {
+    await bridge.start();
+    await waitFor(() => frames.length >= 1);
+    assert.ok(frames[0].capabilities.includes("abort"));
+
+    serverSocket.send(
+      JSON.stringify({
+        type: "message",
+        conversationId: "conv-a",
+        messageId: "m-a",
+        text: "write me a book",
+        sender: { id: "u", name: "Ann" },
+      }),
+    );
+    await waitFor(() => frames.some((f) => f.type === "reply.partial" && f.messageId === "m-a"));
+    assert.ok(seenSignal instanceof AbortSignal);
+    assert.equal(seenSignal.aborted, false);
+
+    // An abort for another turn changes nothing.
+    serverSocket.send(JSON.stringify({ type: "abort", conversationId: "conv-a", messageId: "m-other" }));
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(seenSignal.aborted, false);
+
+    serverSocket.send(JSON.stringify({ type: "abort", conversationId: "conv-a", messageId: "m-a" }));
+    await waitFor(() => frames.some((f) => f.type === "turn.done" && f.messageId === "m-a"));
+    assert.equal(seenSignal.aborted, true);
+    const done = frames.find((f) => f.type === "turn.done" && f.messageId === "m-a");
+    assert.equal(done.status, "aborted");
+    assert.equal(done.error, undefined);
+  } finally {
+    await bridge.stop();
+    wss.close();
+  }
+});
+
 test("bridge: relay disabled or without URL does not connect, runTurn still works for HTTP", async () => {
   const runtime = fakeRuntime();
   const bridge = createChatBridge({

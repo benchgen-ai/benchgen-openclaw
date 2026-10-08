@@ -396,7 +396,7 @@ plugin→Benchgen frame carries `ts` (epoch ms).
 | `tool.start` | `conversationId`, `messageId`, `name`, `args?` | The agent started a tool call. |
 | `choices` | `conversationId`, `messageId`, `questions[{id, header, question, options[{label, description?}], multiSelect}]` | The agent asked a question with options (`ask_user`); draw them as buttons and send the picked label as the next user message. |
 | `reply` | `conversationId`, `messageId`, `text`, `kind` (`block` \| `final` \| `tool`), `mediaUrls?` | A delivered reply message. A turn may deliver several. |
-| `turn.done` | `conversationId`, `messageId`, `status` (`ok` \| `error` \| `dropped`), `error?`, `reason?`, `sessionKey`, `agentId`, `replies{tool,block,final}` | Always the last frame of a turn. |
+| `turn.done` | `conversationId`, `messageId`, `status` (`ok` \| `error` \| `dropped` \| `aborted`), `error?`, `reason?`, `sessionKey`, `agentId`, `replies{tool,block,final}` | Always the last frame of a turn. `aborted`: Benchgen sent `abort` for it. |
 | `pong` | none | Answer to a `ping`. |
 
 **Benchgen → plugin**
@@ -405,6 +405,7 @@ plugin→Benchgen frame carries `ts` (epoch ms).
 | --- | --- | --- |
 | `message` | `conversationId` (recommended), `messageId?`, `text` (required), `sender?{id,name}`, `agentId?`, `timestamp?` | Run one turn. Missing ids are generated and echoed back. |
 | `ping` | none | Liveness; the plugin answers `pong`. The plugin also sends WebSocket ping frames itself. |
+| `abort` | `conversationId`, `messageId` | The user stopped the turn in the chat. The plugin aborts the model call and the running tool and ends the turn with `turn.done` `aborted`; `turn.usage` still follows for what was spent. Announced in `hello.capabilities` as `abort`. |
 | `hello.ack` | `protocol`, `agentId` (BenchGen agent id), `chat{connected,disabled}` | Informational answer to `hello`. |
 | `chat.status` | `connected`, `skipped?`, `error?` | Informational: whether BenchGen (auto-)connected this agent for chat after the hello. |
 

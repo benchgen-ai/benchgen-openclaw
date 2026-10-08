@@ -476,7 +476,7 @@ export function missingRuntimeCapabilities(runtime) {
 }
 
 /**
- * Build the turn runner: `runTurn(message, sink)` runs one Benchgen message as
+ * Build the turn runner: `runTurn(message, sink, signal?)` runs one Benchgen message as
  * an agent turn and reports everything through `sink`:
  *
  *   sink.started({ sessionKey, agentId })
@@ -548,7 +548,7 @@ export function createTurnRunner({
     }
   };
 
-  async function executeTurn(message, sink) {
+  async function executeTurn(message, sink, signal) {
     const cfg = getConfig();
     const channel = runtime.channel;
     const peer = { kind: "direct", id: message.conversationId };
@@ -636,6 +636,11 @@ export function createTurnRunner({
     });
 
     rememberSender(sessionKey, message);
+    if (signal?.aborted) {
+      // Stopped while it was still queued behind another turn of this conversation.
+      safe(sink.done, { status: "aborted", sessionKey, agentId, replies: { tool: 0, block: 0, final: 0 } });
+      return { sessionKey, agentId, replies: { tool: 0, block: 0, final: 0 }, dispatched: false };
+    }
     safe(sink.started, { sessionKey, agentId });
     // Steps come from the before_tool_call hook (see notifyToolStart). A host that
     // also calls onToolStart reports the same call a moment later: skip that one.
@@ -678,6 +683,9 @@ export function createTurnRunner({
         },
       },
       replyOptions: {
+        // Benchgen's abort frame (the user pressed stop) fires this signal; the
+        // host hands it to the model call and to the running tool.
+        ...(signal ? { abortSignal: signal } : {}),
         onPartialReply: (payload) => {
           safe(sink.partial, {
             text: typeof payload?.text === "string" ? payload.text : "",
@@ -704,6 +712,10 @@ export function createTurnRunner({
         },
       },
       });
+    } catch (err) {
+      // An abort surfaces as an error from the host; it is not one for Benchgen.
+      if (!signal?.aborted) throw err;
+      result = { dispatched: true };
     } finally {
       // The turn is over either way: a later tool call in this session (another
       // channel, a cron run) must not be reported into a finished turn.
@@ -711,7 +723,7 @@ export function createTurnRunner({
     }
 
     const dispatched = result?.dispatched !== false;
-    const status = dispatched ? "ok" : "dropped";
+    const status = signal?.aborted ? "aborted" : dispatched ? "ok" : "dropped";
     safe(sink.done, {
       status,
       reason: dispatched ? undefined : result?.admission?.reason,
@@ -749,14 +761,14 @@ export function createTurnRunner({
     timer.unref?.();
   }
 
-  function runTurn(message, sink) {
+  function runTurn(message, sink, signal) {
     const key = message.conversationId;
     const prev = queues.get(key) ?? Promise.resolve();
     const run = prev
       .catch(() => {})
       .then(async () => {
         try {
-          return await executeTurn(message, sink);
+          return await executeTurn(message, sink, signal);
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
           logger?.warn?.(`benchgen chat: turn failed (conversation ${key}): ${error}`);
@@ -1296,6 +1308,8 @@ export function createChatBridge({
   });
   let relay = null;
   let relayUrl = chatConfig.url;
+  // messageId -> AbortController of a turn in flight, for Benchgen's abort frame.
+  const inflight = new Map();
 
   function defaultAgentIdOf(cfg) {
     const ids = listAgentIds(cfg);
@@ -1318,7 +1332,7 @@ export function createChatBridge({
         openclawVersion: runtime?.version,
         agents: ids.length > 0 ? ids : ["main"],
         defaultAgentId: chatConfig.agentId ?? defaultAgentIdOf(cfg),
-        capabilities: ["partial", "tools", "sessions", ...(chatConfig.httpEndpoint ? ["http"] : [])],
+        capabilities: ["partial", "tools", "sessions", "abort", ...(chatConfig.httpEndpoint ? ["http"] : [])],
       }),
     );
   }
@@ -1343,8 +1357,24 @@ export function createChatBridge({
         return;
       }
       const message = norm.message;
+      const controller = new AbortController();
+      inflight.set(message.messageId, controller);
       // Not awaited: the socket must keep reading while the agent thinks.
-      void runner.runTurn(message, createFrameSink(message, (f) => relay?.send(f)));
+      void runner
+        .runTurn(message, createFrameSink(message, (f) => relay?.send(f)), controller.signal)
+        .finally(() => {
+          if (inflight.get(message.messageId) === controller) inflight.delete(message.messageId);
+        });
+      return;
+    }
+    if (type === "abort") {
+      // The user pressed stop in the Benchgen chat: end the turn now, not at
+      // the end of the model's plan. The turn answers with turn.done "aborted".
+      const controller = inflight.get(optionalString(msg?.messageId));
+      if (controller) {
+        controller.abort();
+        logger?.info?.(`benchgen chat: turn ${msg.messageId} aborted by the user`);
+      }
       return;
     }
     if (type === "hello.ack" || type === "pong") return;
@@ -1352,7 +1382,7 @@ export function createChatBridge({
   }
 
   return {
-    runTurn: (message, sink) => runner.runTurn(message, sink),
+    runTurn: (message, sink, signal) => runner.runTurn(message, sink, signal),
     senderOf: (sessionKey) => runner.senderOf(sessionKey),
     contextOf: (sessionKey) => runner.contextOf(sessionKey),
     authOf: (sessionKey) => runner.authOf(sessionKey),
