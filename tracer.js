@@ -300,7 +300,9 @@ export function createTraceEngine(tracing, opts = {}) {
     if (Object.keys(io).length === 0) return;
     try {
       if (typeof root.obs.setTraceIO === "function") root.obs.setTraceIO(io);
-      root.ioSet = true;
+      // Input alone: the reply is not in the transcript yet, so finalization
+      // sets the pair again instead of the trace keeping no reply.
+      if (io.output !== undefined) root.ioSet = true;
     } catch {
       /* best-effort */
     }

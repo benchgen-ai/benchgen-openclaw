@@ -81,6 +81,33 @@ function readWindow(file, maxBytes, from) {
   }
 }
 
+// The message tool actions that post a message and the argument keys its text
+// is read from (OpenClaw MESSAGE_TOOL_SEND_ACTIONS and readMessagingText).
+const MESSAGE_SEND_ACTIONS = new Set(["send", "thread-reply", "sendWithEffect", "sendAttachment", "upload-file"]);
+const MESSAGE_TEXT_KEYS = ["content", "message", "text", "body"];
+// OpenClaw's silent reply: the token alone (edge punctuation allowed) posts nothing.
+const SILENT_REPLY = /^\W*NO_REPLY\W*$/;
+
+/** The text an assistant `toolCall` block posts through the message tool, or undefined. */
+function messageToolSendText(block) {
+  if (block?.type !== "toolCall" || block.name !== "message" || typeof block.id !== "string") return undefined;
+  let args = block.arguments;
+  if (typeof args === "string") {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!args || typeof args !== "object" || !MESSAGE_SEND_ACTIONS.has(String(args.action ?? "").trim())) {
+    return undefined;
+  }
+  for (const key of MESSAGE_TEXT_KEYS) {
+    if (typeof args[key] === "string" && args[key].trim()) return args[key];
+  }
+  return undefined;
+}
+
 /** Extract a prompt/response from a single parsed transcript event. */
 function entryIO(obj) {
   // Transcript schema v3 (OpenClaw >=2026.7.2): message content lives on
@@ -231,14 +258,44 @@ export function extractContent(events, runId) {
   let input;
   let output;
   let sessionInput;
+  // Schema v3 has no runId to scope by, so the turn is everything after its
+  // user message: a reply from before it is the previous turn's, never this
+  // one's. Sends through the message tool (how a group chat is usually
+  // answered) are part of what the user got.
+  let sent = [];
+  const pendingSends = new Map();
   const scopeByRunId = runId !== undefined && events.some((e) => e?.runId !== undefined);
   for (const obj of events) {
     if (!obj) continue;
     const io = entryIO(obj);
     if (io.input !== undefined && sessionInput === undefined) sessionInput = io.input;
     if (scopeByRunId && obj.runId !== runId) continue;
+    const message = obj.type === "message" ? obj.message : undefined;
+    if (message?.role === "user" && io.input !== undefined) {
+      output = undefined;
+      sent = [];
+      pendingSends.clear();
+    }
+    if (message?.role === "assistant" && Array.isArray(message.content)) {
+      for (const block of message.content) {
+        const text = messageToolSendText(block);
+        if (text !== undefined) pendingSends.set(block.id, text);
+      }
+    }
+    if (message?.role === "toolResult" && pendingSends.has(message.toolCallId)) {
+      if (message.isError !== true) sent.push(pendingSends.get(message.toolCallId));
+      pendingSends.delete(message.toolCallId);
+    }
     if (io.input !== undefined) input = io.input;
     if (io.output !== undefined) output = io.output;
+  }
+  if (sent.length > 0) {
+    // OpenClaw drops a final text that only repeats a sent one, or is the
+    // silent token alone; anything else is delivered after the sends.
+    const shown = [...sent];
+    const final = output?.trim();
+    if (final && !SILENT_REPLY.test(final) && !sent.some((s) => s.trim() === final)) shown.push(output);
+    output = shown.join("\n\n");
   }
   if (input === undefined && output === undefined) return null;
   const out = {};

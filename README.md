@@ -172,7 +172,11 @@ analysis, SFT, and RL fine-tuning.
 
 Prompt, response, and tool I/O text are recovered best-effort from the
 per-session trajectory transcript, since message content is not delivered over
-the public diagnostics bus.
+the public diagnostics bus. A trace's response is what the user got in that
+turn: the texts the agent posted with the `message` tool (how group chats are
+usually answered), then its final text unless that is `NO_REPLY` or repeats a
+sent text. A turn that has not replied yet has no response, never the previous
+turn's.
 
 The same plugin also connects the agent to Benchgen for **chat**: Benchgen can
 send messages to the agent and receive its replies (streamed), through an
