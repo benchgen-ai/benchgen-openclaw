@@ -31,6 +31,14 @@
 //   ├─ <tool> (tool | retriever)            from tool.execution.* — retriever for RAG
 //   └─ <model> (generation)
 //
+// One traceId is not always one turn: runs OpenClaw starts on its own (cron
+// jobs, background command completions, heartbeats) inherit the gateway's
+// active trace context, so hours of unrelated runs share it. A root is
+// therefore one run inside a traceId (`<traceId>|<runId>`). Events without a
+// runId (model.usage, model.call.*) join the run active in their session, else
+// the traceId's latest run; a turn with one run per traceId keys exactly as
+// before.
+//
 // The SDK gives no way to set a span's own id, so children are created via
 // `root.startObservation(...)` (Langfuse-generated ids); OpenClaw's traceId is
 // the only correlation key we need. Tool start/terminal pairs match on
@@ -97,8 +105,24 @@ export function createTraceEngine(tracing, opts = {}) {
   // Live observation registry + lookup indexes. An Entry is:
   //   { obs, kind, traceId, keys:[], lastMs, ended }
   const live = new Set();
-  const roots = new Map(); // W3C traceId -> root Entry
+  const roots = new Map(); // root key (`<traceId>|<runId>`, or the traceId alone) -> root Entry
   const byKey = new Map(); // toolCallId|callId -> child Entry (start↔terminal match)
+  const runOfSession = new Map(); // `<traceId>|<sessionKey or sessionId>` -> root key of its run
+  const latestRun = new Map(); // traceId -> root key of the run seen last
+
+  /** The root key an event belongs to, or null when it carries no traceId. */
+  function rootKeyOf(evt) {
+    const tid = evt?.trace?.traceId;
+    if (!tid) return null;
+    const session = evt.sessionKey ?? evt.sessionId;
+    if (evt.runId) {
+      const key = `${tid}|${evt.runId}`;
+      if (session) runOfSession.set(`${tid}|${session}`, key);
+      latestRun.set(tid, key);
+      return key;
+    }
+    return (session && runOfSession.get(`${tid}|${session}`)) ?? latestRun.get(tid) ?? tid;
+  }
 
   function touch(entry) {
     entry.lastMs = now();
@@ -120,7 +144,12 @@ export function createTraceEngine(tracing, opts = {}) {
   function forget(entry) {
     live.delete(entry);
     for (const k of entry.keys) if (byKey.get(k) === entry) byKey.delete(k);
-    if (entry.traceId && roots.get(entry.traceId) === entry) roots.delete(entry.traceId);
+    if (entry.rootKey && roots.get(entry.rootKey) === entry) {
+      roots.delete(entry.rootKey);
+      for (const index of [runOfSession, latestRun]) {
+        for (const [k, v] of index) if (v === entry.rootKey) index.delete(k);
+      }
+    }
   }
 
   /**
@@ -148,14 +177,15 @@ export function createTraceEngine(tracing, opts = {}) {
 
   /**
    * Get-or-create the per-turn root observation, keyed by the event's W3C
-   * traceId. Returns null when the event carries no traceId (caller then makes a
+   * traceId and run (rootKeyOf). Returns null when the event carries no traceId (caller then makes a
    * standalone root). Refreshes name/session when a later event supplies a better
    * channel/session than whatever created the root.
    */
   function ensureRoot(evt) {
     const tid = evt?.trace?.traceId;
-    if (!tid) return null;
-    const existing = roots.get(tid);
+    const key = rootKeyOf(evt);
+    if (!key) return null;
+    const existing = roots.get(key);
     if (existing) {
       maybeRefreshRoot(existing, evt);
       return touch(existing);
@@ -179,6 +209,7 @@ export function createTraceEngine(tracing, opts = {}) {
       obs,
       kind: "root",
       traceId: tid,
+      rootKey: key,
       named: Boolean(evt.channel),
       channel: evt.channel,
       sessioned: Boolean(sessionOf(evt)),
@@ -209,7 +240,7 @@ export function createTraceEngine(tracing, opts = {}) {
       ended: false,
     };
     register(entry);
-    roots.set(tid, entry);
+    roots.set(key, entry);
     return entry;
   }
 

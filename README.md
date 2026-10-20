@@ -176,7 +176,9 @@ the public diagnostics bus. A trace's response is what the user got in that
 turn: the texts the agent posted with the `message` tool (how group chats are
 usually answered), then its final text unless that is `NO_REPLY` or repeats a
 sent text. A turn that has not replied yet has no response, never the previous
-turn's.
+turn's. One trace is one run: runs OpenClaw starts on its own (cron jobs,
+background command completions) share the gateway's trace context, and each
+still gets a trace of its own.
 
 The same plugin also connects the agent to Benchgen for **chat**: Benchgen can
 send messages to the agent and receive its replies (streamed), through an
