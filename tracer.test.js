@@ -82,3 +82,28 @@ test("an event with neither a runId nor a known session joins the traceId's late
   assert.deepEqual(names(roots[0]), []);
   assert.deepEqual(names(roots[1]), ["m"]);
 });
+
+test("a tool the reaper ends keeps the end it reported, not the sweep time", () => {
+  let clock = 0;
+  const ends = [];
+  const { tracing } = fakeTracing();
+  const wrap = (obs) => {
+    const start = obs.startObservation.bind(obs);
+    obs.startObservation = (name, ...rest) => {
+      const child = wrap(start(name, ...rest));
+      child.end = (at) => ends.push([name, at?.getTime?.()]);
+      return child;
+    };
+    return obs;
+  };
+  const root = tracing.startObservation;
+  tracing.startObservation = (name, ...rest) => wrap(root(name, ...rest));
+  const engine = createTraceEngine(tracing, { defer: () => {}, logger: { error() {} }, now: () => clock });
+  // A cron trigger: its exec completes in a second, but no run.completed follows.
+  const trigger = { trace: { traceId: "t" }, runId: "cron-trigger:1", sessionKey: "agent:main:cron:1:trigger" };
+  engine.handle({ type: "tool.execution.started", ts: 1_000, ...trigger, toolName: "exec", toolCallId: "x" });
+  engine.handle({ type: "tool.execution.completed", ts: 2_000, ...trigger, toolName: "exec", toolCallId: "x", durationMs: 1_000 });
+  clock = 6 * 60_000;
+  engine.sweep(clock);
+  assert.deepEqual(ends, [["exec", 2_000]]);
+});

@@ -708,7 +708,11 @@ export function createTraceEngine(tracing, opts = {}) {
         finalizeTrace(entry).catch(() => {
           /* best-effort */
         }); // enrich + soft-end (kept)
-      } else endEntry(entry, nowMs); // dangling child from a dropped terminal event
+      } else {
+        // A dangling child: its terminal event was dropped, or it came but the run
+        // never completed (a cron trigger). Keep the end it reported.
+        endEntry(entry, entry.completedMs ?? nowMs);
+      }
     }
   }
 

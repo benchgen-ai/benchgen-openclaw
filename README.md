@@ -22,6 +22,19 @@
 </div>
 
 
+## What is new in 0.8.5
+
+A batch of spans that fails to reach Benchgen no longer disappears without a
+trace. OpenTelemetry reports a failed or timed-out export only to its own
+diagnostics logger, which nothing read, so a dropped batch left traces with
+just the spans sent before it (a cron run showing only its context, for
+example). Those errors now go to the gateway log as
+`benchgen: OpenTelemetry error: ...`, and one export may take 30 seconds
+instead of the SDK's 5, which a batch closing a long run can need.
+
+A tool span closed by the idle reaper keeps the end time it reported, so a
+one-second command in a run that never completes no longer shows as minutes long.
+
 ## What is new in 0.8.1
 
 The shell environment of a Benchgen chat turn now also carries who is asking:

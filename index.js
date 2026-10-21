@@ -41,6 +41,7 @@ import { compact, setTraceFields, setTraceTags } from "./mapping.js";
 import { makeContentResolver, makeToolIOResolver } from "./transcript.js";
 import { registerBenchgenCli } from "./cli.js";
 import { describeMirror, resolveMirrorConfig } from "./mirror.js";
+import { EXPORT_TIMEOUT_SECONDS, logOtelDiagnostics } from "./otel-log.js";
 import { PRIVATE_BLOCK_REASON, privateAccessHit, resolvePrivateData } from "./private.js";
 import {
   CHAT_HTTP_PATH,
@@ -289,7 +290,13 @@ function createBenchgenService(api, chatState) {
       // Isolated OTel pipeline: our SpanProcessor lives on a dedicated provider,
       // and we point the tracing helpers at it. This keeps us off the global
       // tracer provider that OpenClaw's diagnostics-otel may own.
-      spanProcessor = new LangfuseSpanProcessor({ publicKey, secretKey, baseUrl });
+      logOtelDiagnostics(ctx.logger);
+      spanProcessor = new LangfuseSpanProcessor({
+        publicKey,
+        secretKey,
+        baseUrl,
+        timeout: EXPORT_TIMEOUT_SECONDS,
+      });
       const spanProcessors = [spanProcessor];
       // Trace mirror (mirror.js): the same spans, a second Benchgen project. It
       // hangs off the same provider, so every trace, the startup trace included,
@@ -301,6 +308,7 @@ function createBenchgenService(api, chatState) {
           publicKey: mirror.publicKey,
           secretKey: mirror.secretKey,
           baseUrl: mirror.baseUrl,
+          timeout: EXPORT_TIMEOUT_SECONDS,
           ...(mirror.environment ? { environment: mirror.environment } : {}),
         });
         spanProcessors.push(mirrorProcessor);

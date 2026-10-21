@@ -1,6 +1,6 @@
 {
   "name": "@benchgen/benchgen-openclaw",
-  "version": "0.8.4",
+  "version": "0.8.5",
   "description": "Stream OpenClaw agent traces to Benchgen and let Benchgen chat with the agent",
   "type": "module",
   "main": "index.js",
@@ -20,6 +20,7 @@
     "README.md",
     "LICENSE",
     "mirror.js",
+    "otel-log.js",
     "private.js"
   ],
   "openclaw": {
