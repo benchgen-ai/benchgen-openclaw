@@ -1,6 +1,6 @@
 {
   "name": "@benchgen/benchgen-openclaw",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "Stream OpenClaw agent traces to Benchgen and let Benchgen chat with the agent",
   "type": "module",
   "main": "index.js",
@@ -67,10 +67,14 @@
   "license": "MIT",
   "dependencies": {
     "@clack/prompts": "^0.7.0",
-    "@langfuse/otel": "^5.9.0",
-    "@langfuse/tracing": "^5.9.0",
-    "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/sdk-trace-node": "^2.8.0",
+    "@langfuse/otel": "~5.14.0",
+    "@langfuse/tracing": "~5.14.0",
+    "@opentelemetry/api": "~1.9.1",
+    "@opentelemetry/core": "~2.12.0",
+    "@opentelemetry/exporter-trace-otlp-http": "~0.223.0",
+    "@opentelemetry/otlp-exporter-base": "~0.223.0",
+    "@opentelemetry/sdk-trace-base": "~2.12.0",
+    "@opentelemetry/sdk-trace-node": "~2.12.0",
     "ws": "^8.18.0"
   }
 }
